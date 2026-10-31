@@ -72,6 +72,9 @@ test('admin page requires an authenticated GitHub session', async () => {
   assert.match(page, /id="providers-body"[^>]*hidden/);
   assert.match(page, /unstick-all-providers/);
   assert.match(page, /\/admin\/api\/providers\/unstick-all/);
+  assert.match(page, /textContent = 'Profile'/);
+  assert.match(page, /← Providers/);
+  assert.match(page, /encodeURIComponent\(providerId\) \+ '\/profile'/);
   assert.match(page, /id="providers" class="providers"/);
   assert.match(page, /id="logs-nested-toggle"/);
   assert.match(page, /Live run:/);
@@ -2040,6 +2043,102 @@ test('hourly sweep still saves stories when finish calls fail', async () => {
     assert.equal(finishAttempts, 9);
   } finally {
     updateAiCurationConfig({ enabled: true });
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('admin provider profile aggregates runs, logs and live status', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    const method = options?.method || 'GET';
+    if (url.hostname === 'supabase.example') {
+      if (url.pathname.endsWith('/news_provider_sync') && method === 'GET') {
+        return Response.json([{ provider: 'gnews', status: 'succeeded', started_at: null, last_attempt_at: '2026-10-30T21:00:00Z', last_success_at: '2026-10-30T21:00:00Z', stories_saved: 10, last_error: null, cooldown_until: null, rate_limit_reset_at: null, updated_at: '2026-10-30T21:00:00Z' }]);
+      }
+      if (url.pathname.endsWith('/provider_sync_runs')) {
+        return Response.json([
+          { id: 'run-live', trigger: 'cron', provider: null, status: 'running', started_at: '2026-10-30T21:00:00Z', finished_at: null, pairs_total: 42, pairs_done: 3, current_provider: 'gnews', current_category: 'tech', last_activity_at: '2026-10-30T21:01:00Z', last_telemetry: null, summary: { inProgress: true, providers: [{ provider: 'gnews', pairs: 3, lastStatus: 'succeeded', lastCategory: 'tech' }] } },
+          { id: 'run-old', trigger: 'cron', provider: null, status: 'succeeded', started_at: '2026-10-30T20:00:00Z', finished_at: '2026-10-30T20:05:00Z', pairs_total: 42, pairs_done: 42, current_provider: null, current_category: null, last_activity_at: '2026-10-30T20:05:00Z', last_telemetry: null, summary: { totalStoriesSaved: 400, providers: [{ provider: 'gnews', status: 'succeeded', storiesSaved: 70 }] } }
+        ]);
+      }
+      if (url.pathname.endsWith('/news_provider_logs')) {
+        const allLogs = [
+          { status: 'succeeded', items_fetched: 10, stories_saved: 10, created_at: '2026-10-30T20:00:00Z' },
+          { status: 'failed', items_fetched: 0, stories_saved: 0, created_at: '2026-10-30T19:00:00Z' },
+          { status: 'rate_limited', items_fetched: 0, stories_saved: 0, created_at: '2026-10-30T18:00:00Z' },
+          { status: 'succeeded', items_fetched: 10, stories_saved: 10, created_at: '2026-10-30T17:00:00Z' }
+        ];
+        if (url.searchParams.get('limit') === '10') {
+          return Response.json(allLogs.slice(0, 2).map(l => ({ ...l, category: 'tech', trigger_source: 'cron', http_status: 200, duration_ms: 100, attempt_count: 1, error_message: null })));
+        }
+        const offset = Number(url.searchParams.get('offset') || 0);
+        return Response.json(allLogs.slice(offset));
+      }
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+  try {
+    const cookie = (await adminCookie()).split(';')[0];
+    const env = {
+      ...authEnv,
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    };
+    const response = await worker.fetch(
+      new Request('https://worker.example/admin/api/providers/gnews/profile', {
+        headers: { Origin: 'https://worker.example', Cookie: cookie }
+      }),
+      env
+    );
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.provider.id, 'gnews');
+    assert.equal(data.provider.label, 'GNews');
+    assert.equal(data.provider.credentialConfigured, false);
+    assert.ok(data.provider.categories.includes('tech'));
+    assert.equal(data.live.running, false);
+    assert.equal(data.live.pairsDone, 3);
+    assert.equal(data.live.isCurrentPair, true);
+    assert.equal(data.live.activeRun.id, 'run-live');
+    assert.equal(data.lastRuns.length, 2);
+    assert.equal(data.lastRuns[0].providerStatus, 'succeeded', 'heartbeat-shaped entries resolve via lastStatus');
+    assert.equal(data.lastRuns[1].storiesSaved, 70);
+    assert.equal(data.lifetime.totalRequests, 4);
+    assert.equal(data.lifetime.fetched, 20);
+    assert.equal(data.lifetime.saved, 20);
+    assert.equal(data.lifetime.succeeded, 2);
+    assert.equal(data.lifetime.failed, 1);
+    assert.equal(data.lifetime.rateLimited, 1);
+    assert.equal(data.lifetime.lastSuccessAt, '2026-10-30T20:00:00Z');
+    assert.equal(data.lifetime.truncated, false);
+    assert.equal(data.recentLogs.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('admin provider profile rejects unknown providers', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('must not fetch for unknown providers'); };
+  try {
+    const cookie = (await adminCookie()).split(';')[0];
+    const env = {
+      ...authEnv,
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    };
+    const response = await worker.fetch(
+      new Request('https://worker.example/admin/api/providers/nope/profile', {
+        headers: { Origin: 'https://worker.example', Cookie: cookie }
+      }),
+      env
+    );
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: 'Unknown news provider' });
+  } finally {
     globalThis.fetch = originalFetch;
   }
 });

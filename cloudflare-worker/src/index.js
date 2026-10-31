@@ -15,6 +15,8 @@ import {
 import {
   claimNewsProviderSync,
   finishNewsProviderSync,
+  updateProviderSyncStatus,
+  getProviderProfile,
   resetNewsProviderSync,
   unstickAllProviderSyncs,
   approveNewsStory,
@@ -688,6 +690,14 @@ async function drainProviderRetries(env, { limit = 10, triggerSource = 'cron:ret
         storiesSaved: upsertResult?.savedCount ?? 0,
         duplicatesSkipped: upsertResult?.duplicatesSkipped ?? 0,
         errorMessage: null
+      });
+      // The drain used to leave the provider row untouched, so a drained
+      // success showed nowhere except the logs. Update the status fields
+      // (never started_at — updateProviderSyncStatus preserves a live
+      // sweep's claim) so the cards and profile pages reflect it.
+      await updateProviderSyncStatus(env, job.provider, {
+        status: 'succeeded',
+        storiesSaved: upsertResult?.savedCount ?? 0
       });
       await completeRetryJob(env, job.id, { success: true });
       succeeded++;
@@ -1841,6 +1851,23 @@ async function serveAdmin(request, env) {
     } catch (err) {
       console.error('News admin provider reset failed:', err);
       return jsonResponse({ error: err instanceof Error ? err.message : 'Could not reset provider sync state' }, 502);
+    }
+  }
+
+  const profileMatch = url.pathname.match(/^\/admin\/api\/providers\/([a-z0-9-]+)\/profile$/);
+  if (profileMatch && request.method === 'GET') {
+    try {
+      if (!isSameOrigin(request)) {
+        return jsonResponse({ error: 'Provider profile must be requested from the admin origin' }, 403);
+      }
+      const limit = await env.SUMMARY_RATE_LIMITER.limit({ key: `admin:${identity.login}` });
+      if (!limit.success) return jsonResponse({ error: 'Admin update rate limit exceeded' }, 429);
+      const profile = await getProviderProfile(env, profileMatch[1]);
+      if (!profile) return jsonResponse({ error: 'Unknown news provider' }, 404);
+      return jsonResponse(profile);
+    } catch (err) {
+      console.error('News admin provider profile failed:', err);
+      return jsonResponse({ error: err instanceof Error ? err.message : 'Could not load provider profile' }, 502);
     }
   }
 
