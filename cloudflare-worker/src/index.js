@@ -86,6 +86,7 @@ import { startSyncRun, updateSyncRun, finishSyncRun, isSyncRunHeartbeatDue, summ
 import { stageHalloweenBatch } from './halloween-batch.mjs';
 import { matchAdsToStory, rankAdsByEmbeddingSimilarity } from './ad-keyword-matcher.mjs';
 import { createAiUsageCounter, AI_USAGE_MODEL_LLAMA, AI_USAGE_MODEL_FLUX, AI_USAGE_MODEL_SDXL, AI_USAGE_MODEL_BGE } from './ai-usage-log.mjs';
+import { handleOpenWebUIGateway } from './openwebui-gateway.mjs';
 
 const MAX_REQUEST_BYTES = 64_000;
 const MAX_PAGE_BYTES = 1_000_000;
@@ -3249,11 +3250,14 @@ async function serveAiStoryImage(request, env) {
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.hostname === 'lil.littlables.com') {
+      return handleOpenWebUIGateway(request, env);
+    }
     if (request.method === 'OPTIONS') {
       const cors = getCorsHeaders(request);
       return new Response(null, { status: 204, headers: Object.keys(cors).length > 0 ? cors : corsHeaders });
     }
-    const url = new URL(request.url);
     const pathname = url.pathname;
     if (pathname === '/admin' || pathname.startsWith('/admin/')) {
       const resp = await serveAdmin(request, env);

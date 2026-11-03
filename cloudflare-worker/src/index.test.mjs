@@ -90,6 +90,105 @@ test('POST /api/lil/search forwards the browser session ID after admin authentic
   }
 });
 
+test('Open WebUI gateway gives the sign-in relay to unauthenticated visitors', async () => {
+  const response = await worker.fetch(new Request('https://lil.littlables.com/'), {
+    LIL_WEBUI_SESSION_SECRET: 'test-webui-session-secret-at-least-32-chars'
+  }, {});
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('Content-Security-Policy'), /frame-ancestors https:\/\/littlables\.com/);
+  assert.match(await response.text(), /LITTLABLES_OPENWEBUI_AUTH_REQUIRED/);
+});
+
+test('Open WebUI gateway rejects sign-in from non-admin site accounts', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'regular-user', email: 'user@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: false }]);
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://lil.littlables.com/__lil/auth', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer regular-user-token',
+        Origin: 'https://lil.littlables.com'
+      }
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'test-service-key',
+      LIL_WEBUI_SESSION_SECRET: 'test-webui-session-secret-at-least-32-chars'
+    }, {});
+
+    assert.equal(response.status, 403);
+    assert.equal(response.headers.has('Set-Cookie'), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Open WebUI gateway verifies a site admin and proxies with a private origin secret', async () => {
+  const originalFetch = globalThis.fetch;
+  let upstreamRequest;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/_internal/openwebui/api/version') {
+      upstreamRequest = { url, headers: new Headers(options.headers) };
+      return Response.json({ version: 'test' });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const env = {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'test-service-key',
+      LIL_API_ORIGIN: 'https://lil-api.example',
+      LIL_OPENWEBUI_PROXY_SECRET: 'test-proxy-secret-with-at-least-32-chars',
+      LIL_WEBUI_SESSION_SECRET: 'test-webui-session-secret-at-least-32-chars'
+    };
+    const authResponse = await worker.fetch(new Request('https://lil.littlables.com/__lil/auth', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer admin-user-token',
+        Origin: 'https://lil.littlables.com'
+      }
+    }), env, {});
+    assert.equal(authResponse.status, 204);
+    const sessionCookie = authResponse.headers.get('Set-Cookie').split(';', 1)[0];
+
+    const response = await worker.fetch(new Request('https://lil.littlables.com/api/version', {
+      headers: {
+        Cookie: `${sessionCookie}; open-webui=chat-session`,
+        Authorization: 'Bearer open-webui-token'
+      }
+    }), env, {});
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { version: 'test' });
+    assert.equal(upstreamRequest.url.search, '');
+    assert.equal(upstreamRequest.headers.get('X-Lil-OpenWebUI-Proxy-Secret'), env.LIL_OPENWEBUI_PROXY_SECRET);
+    assert.equal(upstreamRequest.headers.get('X-Forwarded-Host'), 'lil.littlables.com');
+    assert.equal(upstreamRequest.headers.get('X-Forwarded-Proto'), 'https');
+    assert.equal(upstreamRequest.headers.get('Cookie'), 'open-webui=chat-session');
+    assert.equal(upstreamRequest.headers.get('Authorization'), 'Bearer open-webui-token');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('admin page offers GitHub sign-in when there is no valid session', async () => {
   const response = await worker.fetch(new Request('https://worker.example/admin'), {}, {});
   assert.equal(response.status, 200);

@@ -38,33 +38,32 @@ Install Docker Engine with the Compose plugin, and install/start [Ollama](https:
 
 Open WebUI listens only on `127.0.0.1:3011`; Ollama stays on `127.0.0.1:11434`. The Open WebUI data directory is persisted under `~/.lil/db/`. On first startup, visit `http://127.0.0.1:3011` on the laptop and create the administrator account **before** exposing the hostname. In Open WebUI, disable public sign-ups, enable API keys, and create a separate least-privileged account/key for the Lil API where possible. Keep Open WebUI plugins disabled unless they are needed and reviewed.
 
-Set `OPENWEBUI_API_KEY` and the model ID shown by Open WebUI in `~/.lil/.env` (see `~/.lil/.env.example`), then restart `littlables-lil`. Keep `.env` private; the key is only used by the laptop API and must never go in the website or Worker configuration. The API calls Open WebUI at `http://127.0.0.1:3011/api/chat/completions`, then writes the exchange to Lil's existing archive. Open WebUI's API key authenticates the laptop API to Open WebUI; it does not replace the site's Supabase admin check.
+Set `OPENWEBUI_API_KEY` and the model ID shown by Open WebUI in `~/.lil/.env` (see `~/.lil/.env.example`). Keep `.env` private; the key is only used by the laptop API and must never go in the website or Worker configuration. The API calls Open WebUI at `http://127.0.0.1:3011/api/chat/completions`, then writes the exchange to Lil's existing archive.
 
 #### Remote Open WebUI through Cloudflare
 
-The existing Cloudflare Tunnel hostname `lil-api.littlables.com` must continue to point to `http://127.0.0.1:3010` for authenticated Lil API requests. Add a second public-hostname route to the same `littlables-lil` tunnel:
+The existing Cloudflare Tunnel hostname `lil-api.littlables.com` must continue to point to `http://127.0.0.1:3010` for authenticated Lil API requests. The `lil.littlables.com` hostname must also use the laptop API port as a **fail-closed fallback**, not port 3011:
 
 | Hostname | Local service |
 | --- | --- |
-| `lil.littlables.com` | `http://127.0.0.1:3011` |
+| `lil-api.littlables.com` | `http://127.0.0.1:3010` |
+| `lil.littlables.com` | `http://127.0.0.1:3010` |
 
-Do not expose port `3011` on the laptop's network interface and do not route the Ollama port. In Cloudflare Zero Trust, create a **self-hosted Access application** for `lil.littlables.com` and an **Allow** policy limited to your identity/email. Require Cloudflare Access as well as Open WebUI's own login. Complete the first Cloudflare Access login by opening `https://lil.littlables.com` in a new tab; the embedded view on `/lil` can then reuse the browser's Access session. The page also has an “Open in new tab” link if the embedded sign-in is blocked by the browser.
+Do not expose port `3011` on the laptop's network interface and do not route the Ollama port. The Cloudflare Worker must be attached to the custom route `lil.littlables.com/*`; it verifies the user's Littlables Supabase session and admin status before proxying Open WebUI requests through the authenticated laptop API. The tunnel's port-3010 fallback prevents a missing Worker route from exposing Open WebUI directly.
 
-For production, the Open WebUI container's Content Security Policy permits framing only by `https://littlables.com` (and itself); localhost origins are also allowed for local Vite development. Do not add a broad frame policy or disable the Open WebUI login. The compose service binds to loopback and restarts with Docker; keep Docker and the existing `cloudflared` service enabled at boot (`sudo systemctl enable --now docker cloudflared`).
+In Cloudflare **Workers & Pages**, add the route `lil.littlables.com/*` to the existing `hello-ai` Worker. Keep the Tunnel's `lil.littlables.com` public hostname pointed at port 3010 as a fail-closed fallback; do not point that hostname directly at Open WebUI on port 3011. The Worker route should intercept the hostname and use the existing `LIL_API_ORIGIN=https://lil-api.littlables.com` to reach the laptop proxy.
+
+Set two Cloudflare Worker secrets: `LIL_WEBUI_SESSION_SECRET` (a new random value) and `LIL_OPENWEBUI_PROXY_SECRET` (a different random value). Put the matching `LIL_OPENWEBUI_PROXY_SECRET` in `~/.lil/.env`; the Worker and laptop values must match. Generate strong random values locally (for example, `openssl rand -hex 32`) and enter them directly into the Worker Secrets settings and local `.env`; never put them in the website, Worker source, repository, or chat. The Worker also needs its existing Supabase bindings. The gateway session expires after 15 minutes; admin status is checked when the session is created, so removing an admin may take up to 15 minutes to take effect. Keep Open WebUI's own login and disabled public sign-ups enabled; the Littlables admin check is an additional gate, not a replacement for Open WebUI authentication. This route does not require Cloudflare Access or its billing authorization.
+
+For production, the Open WebUI container's Content Security Policy permits framing only by `https://littlables.com` (and itself); localhost origins are also allowed for local Vite development. Do not add a broad frame policy. The container binds to loopback and restarts with Docker; keep Docker and the existing `cloudflared` service enabled at boot (`sudo systemctl enable --now docker cloudflared`).
 
 #### Website and laptop API
 
 For local website development, run `npm run dev` and open `/lil` while signed in as a site admin. Vite proxies `/api/lil` to `127.0.0.1:3010`, so start the external API separately with `~/.lil/start-api.sh`. The repository's `scripts/start-lil-local.sh` can bootstrap Node.js and website dependencies before starting Vite; it does not start either laptop service.
 
-The Cloudflare Worker uses `LIL_API_ORIGIN=https://lil-api.littlables.com`. The API listens on loopback at port 3010, and the Worker forwards the browser session ID so conversations remain grouped in the local archive. Install the external API dependencies once with `npm install --prefix ~/.lil`. The laptop's systemd unit is outside the website repository at `~/.lil/littlables-lil.service`; install it and enable the services:
+The Cloudflare Worker uses `LIL_API_ORIGIN=https://lil-api.littlables.com`. The API listens on loopback at port 3010, and the Worker forwards the browser session ID so conversations remain grouped in the local archive. Install the external API dependencies once with `npm install --prefix ~/.lil`. Start the laptop API manually with `~/.lil/start-api.sh` and leave its terminal open while using Lil. The same API provides the secret-protected Open WebUI reverse-proxy endpoint used by the Worker.
 
-```sh
-sudo cp ~/.lil/littlables-lil.service /etc/systemd/system/littlables-lil.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now ollama littlables-lil
-```
-
-Check the local API with `curl http://127.0.0.1:3010/api/health` and inspect logs with `sudo journalctl -u littlables-lil -f`. The laptop must be awake and online, with Ollama, Open WebUI, the Lil API service, Docker, and Cloudflare Tunnel running. If it sleeps or loses internet, Lil and remote Open WebUI are unavailable until it reconnects. Ollama answers are generated locally and are not checked against live web sources.
+Check the local API with `curl http://127.0.0.1:3010/api/health`; errors appear in the terminal running `start-api.sh`. The laptop must be awake and online, with Ollama, Open WebUI, the Lil API, Docker, and Cloudflare Tunnel running. If it sleeps or loses internet, Lil and remote Open WebUI are unavailable until it reconnects. Ollama answers are generated locally and are not checked against live web sources.
 
 
 ## AI / LLM usage (Cloudflare Workers AI)

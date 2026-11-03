@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getSupabaseClient } from '../services/supabaseService';
+import { useAdminStatus } from '../hooks/useAdminStatus';
 import { LIL_CONFIG, NEWS_CONFIG } from '../constants/config';
 
 export interface LilSource {
@@ -47,6 +48,7 @@ const OPEN_WEBUI_URL =
     : LIL_CONFIG.openWebUIUrl;
 
 export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
+  const { isAdmin } = useAdminStatus();
   const [query, setQuery] = useState('');
   const [showOpenWebUI, setShowOpenWebUI] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -70,6 +72,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
   const [copied, setCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const openWebUIFrameRef = useRef<HTMLIFrameElement>(null);
   const sessionIdRef = useRef(crypto.randomUUID());
 
   useEffect(() => {
@@ -77,6 +80,38 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
       localStorage.setItem('littlables_lil_history', JSON.stringify(searchHistory));
     } catch {}
   }, [searchHistory]);
+
+  useEffect(() => {
+    if (!showOpenWebUI || isLocalHost || !isAdmin) return;
+
+    const frame = openWebUIFrameRef.current;
+    const frameOrigin = new URL(OPEN_WEBUI_URL).origin;
+    let active = true;
+
+    const onMessage = async (event: MessageEvent) => {
+      if (
+        event.origin !== frameOrigin ||
+        event.source !== frame?.contentWindow ||
+        event.data?.type !== 'LITTLABLES_OPENWEBUI_AUTH_REQUIRED'
+      ) return;
+
+      const client = getSupabaseClient();
+      if (!client) return;
+      const { data: { session } } = await client.auth.getSession();
+      if (!active || !session?.access_token) return;
+
+      frame?.contentWindow?.postMessage({
+        type: 'LITTLABLES_OPENWEBUI_ADMIN_SESSION',
+        accessToken: session.access_token
+      }, frameOrigin);
+    };
+
+    window.addEventListener('message', onMessage);
+    return () => {
+      active = false;
+      window.removeEventListener('message', onMessage);
+    };
+  }, [showOpenWebUI, isAdmin]);
 
   const handleSearch = async (searchTerm: string) => {
     const trimmed = searchTerm.trim();
@@ -296,6 +331,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
             </a>
           </div>
           <iframe
+            ref={openWebUIFrameRef}
             className="lil-openwebui-frame"
             src={OPEN_WEBUI_URL}
             title="Open WebUI chat"
