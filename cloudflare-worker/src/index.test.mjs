@@ -141,6 +141,7 @@ test('Open WebUI gateway gives the sign-in relay to unauthenticated visitors', a
   assert.match(response.headers.get('Content-Security-Policy'), /frame-ancestors https:\/\/littlables\.com/);
   const html = await response.text();
   assert.match(html, /LITTLABLES_OPENWEBUI_AUTH_REQUIRED/);
+  assert.match(html, /window\.location\.replace\('https:\/\/littlables\.com\/lil\?openWebUI=1'\)/);
   assert.match(html, /class="continue"/);
   assert.match(html, /background: linear-gradient\(145deg/);
   assert.match(html, /aria-live="polite"/);

@@ -205,7 +205,7 @@ function relayPage() {
     <h1>Sign in to Littlables</h1>
     <p class="description">Your little corner for curious questions and big discoveries.</p>
     <p class="status" id="status" role="status" aria-live="polite">Open Lil while signed in to your Littlables admin account to continue to Open WebUI.</p>
-    <a class="continue" href="https://littlables.com/lil">Go to Lil <span aria-hidden="true">→</span></a>
+    <a class="continue" href="https://littlables.com/lil?openWebUI=1">Go to Lil <span aria-hidden="true">→</span></a>
     <p class="footnote">Open WebUI is available to Littlables administrators.</p>
   </main>
   <script>
@@ -243,12 +243,17 @@ function relayPage() {
         completed = false;
       }
     });
-    announce();
-    const retry = setInterval(() => {
-      if (completed) clearInterval(retry);
-      else announce();
-    }, 1000);
-    setTimeout(() => clearInterval(retry), 30000);
+    if (window.parent === window) {
+      status.textContent = 'Opening Open WebUI through your Littlables account…';
+      window.location.replace('https://littlables.com/lil?openWebUI=1');
+    } else {
+      announce();
+      const retry = setInterval(() => {
+        if (completed) clearInterval(retry);
+        else announce();
+      }, 1000);
+      setTimeout(() => clearInterval(retry), 30000);
+    }
   </script>
 </body>
 </html>`;

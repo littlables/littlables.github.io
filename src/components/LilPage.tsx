@@ -50,7 +50,9 @@ const OPEN_WEBUI_URL =
 export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
   const { isAdmin } = useAdminStatus();
   const [query, setQuery] = useState('');
-  const [showOpenWebUI, setShowOpenWebUI] = useState(false);
+  const [showOpenWebUI, setShowOpenWebUI] = useState(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('openWebUI') === '1'
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentResult, setCurrentResult] = useState<LilSearchResult | null>(null);
