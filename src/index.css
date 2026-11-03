@@ -5895,6 +5895,64 @@ html[data-system-font="true"] .story-provider-badge {
   flex-shrink: 0;
 }
 
+.lil-floating-avatar {
+  position: fixed;
+  z-index: 1200;
+  right: max(1.25rem, env(safe-area-inset-right));
+  bottom: max(1.25rem, env(safe-area-inset-bottom));
+  display: block;
+  width: 68px;
+  height: 68px;
+  border: 3px solid rgba(245, 208, 254, 0.82);
+  border-radius: 50%;
+  background: #7c3aed;
+  box-shadow: 0 8px 26px rgba(13, 5, 26, 0.48), 0 0 0 5px rgba(192, 132, 252, 0.14);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.lil-floating-avatar:hover {
+  transform: translateY(-4px) scale(1.04);
+  box-shadow: 0 12px 30px rgba(13, 5, 26, 0.52), 0 0 0 7px rgba(192, 132, 252, 0.2);
+}
+
+.lil-floating-avatar:focus-visible {
+  outline: 3px solid #f0abfc;
+  outline-offset: 5px;
+}
+
+.lil-floating-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.lil-floating-avatar-status {
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+  width: 16px;
+  height: 16px;
+  border: 3px solid var(--news-card-bg, #1b0d33);
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.55);
+}
+
+@media (max-width: 600px) {
+  .lil-floating-avatar {
+    right: max(0.9rem, env(safe-area-inset-right));
+    bottom: max(0.9rem, env(safe-area-inset-bottom));
+    width: 58px;
+    height: 58px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lil-floating-avatar {
+    transition: none;
+  }
+}
+
 @media (max-width: 640px) {
   .lil-search-form {
     flex-direction: column;

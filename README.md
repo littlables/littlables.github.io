@@ -63,6 +63,8 @@ For local website development, run `npm run dev` and open `/lil` while signed in
 
 The Cloudflare Worker uses `LIL_API_ORIGIN=https://lil-api.littlables.com`. The API listens on loopback at port 3010, and the Worker forwards the browser session ID so conversations remain grouped in the local archive. Install the external API dependencies once with `npm install --prefix ~/.lil`. Start the laptop API manually with `~/.lil/start-api.sh` and leave its terminal open while using Lil. The same API provides the secret-protected Open WebUI reverse-proxy endpoint used by the Worker.
 
+The floating Lil avatar appears across the site only while the laptop API, Open WebUI, and configured Ollama model are reachable. The Worker exposes only this online/offline boolean and authenticates its status request to the laptop API with `LIL_OPENWEBUI_PROXY_SECRET`. Set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` in `~/.lil/.env` to match the local Ollama service and model; the avatar is hidden on `/lil` and `lil.littlables.com`.
+
 Check the local API with `curl http://127.0.0.1:3010/api/health`; errors appear in the terminal running `start-api.sh`. The laptop must be awake and online, with Ollama, Open WebUI, the Lil API, Docker, and Cloudflare Tunnel running. If it sleeps or loses internet, Lil and remote Open WebUI are unavailable until it reconnects. Ollama answers are generated locally and are not checked against live web sources.
 
 

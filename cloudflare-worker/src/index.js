@@ -114,6 +114,29 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+async function getLilOnlineStatus(env) {
+  const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
+  const proxySecret = String(env.LIL_OPENWEBUI_PROXY_SECRET || '');
+  if (!configuredOrigin || proxySecret.length < 32) return jsonResponse({ online: false });
+
+  try {
+    const apiOrigin = new URL(configuredOrigin);
+    if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
+      return jsonResponse({ online: false });
+    }
+
+    const response = await fetch(`${apiOrigin.origin}/api/lil/status`, {
+      headers: { 'X-Lil-OpenWebUI-Proxy-Secret': proxySecret },
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok) return jsonResponse({ online: false });
+    const status = await response.json();
+    return jsonResponse({ online: status?.online === true });
+  } catch {
+    return jsonResponse({ online: false });
+  }
+}
+
 async function handleEngagementEvent(request, env) {
   try {
     // Never log internal traffic (admin testing, dev site) — it would skew audience stats.
@@ -3259,6 +3282,9 @@ export default {
       return new Response(null, { status: 204, headers: Object.keys(cors).length > 0 ? cors : corsHeaders });
     }
     const pathname = url.pathname;
+    if (request.method === 'GET' && pathname === '/api/lil/status') {
+      return getLilOnlineStatus(env);
+    }
     if (pathname === '/admin' || pathname.startsWith('/admin/')) {
       const resp = await serveAdmin(request, env);
       // Add CORS headers for frontend admin editing (GitHub session via credentials:include)

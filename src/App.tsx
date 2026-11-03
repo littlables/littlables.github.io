@@ -24,6 +24,7 @@ import { SpaceRoutePage } from './components/SpaceRoutePage';
 import { WorksheetsPanel } from './components/WorksheetsPanel';
 import { FallingEmojis } from './components/FallingEmojis';
 import { LilPage } from './components/LilPage';
+import { LilAvatar } from './components/LilAvatar';
 import type { OpenProfileTarget } from './components/PlayroomPage';
 import { useAuth } from './contexts/AuthContext';
 import type { PillConfig } from './contexts/AuthContext';
@@ -769,6 +770,7 @@ export const App: React.FC = () => {
   return (
     <>
       <FallingEmojis onCollect={handleCollectEmoji} enabled={gameEnabled} />
+      <LilAvatar isLilPage={lilRoute} />
       <div className="news-widget-wrapper">
         <Header
           onHomeClick={handleHomeRefresh}
