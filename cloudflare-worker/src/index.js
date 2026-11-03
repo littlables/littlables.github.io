@@ -3331,8 +3331,9 @@ export default {
     }
     // Lil runs on the admin's laptop. The Worker verifies site admin access
     // first, then forwards only this request to the private tunnel origin.
-    if (request.method === 'POST' && pathname === '/api/lil/search') {
+    if (request.method === 'POST' && (pathname === '/api/lil/search' || pathname === '/api/lil/chat')) {
       try {
+        const isChatRequest = pathname === '/api/lil/chat';
         const contentLength = Number(request.headers.get('Content-Length') || 0);
         if (contentLength > 16_384) return jsonResponse({ error: 'Lil request is too large.' }, 413);
         if (env.SUMMARY_RATE_LIMITER) {
@@ -3346,13 +3347,40 @@ export default {
         if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
 
         const payload = await request.json().catch(() => null);
-        const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
-        if (!query) return jsonResponse({ error: 'Please provide a search question or topic.' }, 400);
-        if (query.length > 500) return jsonResponse({ error: 'Lil questions must be 500 characters or fewer.' }, 400);
-        const forwardedRequest = { query };
+        let forwardedRequest;
+        if (isChatRequest && Array.isArray(payload?.messages)) {
+          if (payload.messages.length < 1 || payload.messages.length > 12) {
+            return jsonResponse({ error: 'Chat history must contain between 1 and 12 messages.' }, 400);
+          }
+          let totalLength = 0;
+          const messages = [];
+          for (const message of payload.messages) {
+            if (!message || !['user', 'assistant'].includes(message.role) ||
+                typeof message.content !== 'string' || !message.content.trim() ||
+                new TextEncoder().encode(message.content).byteLength > 8_000 ||
+                (message.role === 'user' && message.content.length > 2_000)) {
+              return jsonResponse({ error: 'Chat history contains an invalid message.' }, 400);
+            }
+            totalLength += new TextEncoder().encode(message.content).byteLength;
+            messages.push({ role: message.role, content: message.content.trim() });
+          }
+          if (totalLength > 12_000 || messages[messages.length - 1].role !== 'user') {
+            return jsonResponse({ error: 'Chat history is too long or does not end with a user message.' }, 400);
+          }
+          forwardedRequest = {
+            messages,
+            mode: payload.mode === 'code' ? 'code' : 'chat'
+          };
+        } else {
+          const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
+          if (!query) return jsonResponse({ error: 'Please provide a search question or topic.' }, 400);
+          if (query.length > 500) return jsonResponse({ error: 'Lil questions must be 500 characters or fewer.' }, 400);
+          forwardedRequest = { query };
+        }
         if (typeof payload.sessionId === 'string' && payload.sessionId.trim()) {
           forwardedRequest.sessionId = payload.sessionId.trim().slice(0, 200);
         }
+        if (isChatRequest) forwardedRequest.source = `web-lil-${forwardedRequest.mode || 'chat'}`;
 
         const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
         if (!configuredOrigin) return jsonResponse({ error: 'Lil laptop connection is not configured.' }, 503);
@@ -3367,7 +3395,7 @@ export default {
           return jsonResponse({ error: 'Lil laptop connection must be an HTTPS origin.' }, 503);
         }
 
-        const upstream = await fetch(`${apiOrigin.origin}/api/lil/search`, {
+        const upstream = await fetch(`${apiOrigin.origin}/api/lil/${isChatRequest ? 'chat' : 'search'}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

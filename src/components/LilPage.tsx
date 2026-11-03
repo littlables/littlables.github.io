@@ -20,8 +20,64 @@ export interface LilSearchResult {
   timestamp: number;
 }
 
+interface LilChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+type LilView = 'search' | 'chat' | 'code' | 'games' | 'admin';
+type LilChatMode = 'chat' | 'code';
+
 interface LilPageProps {
   onHome: () => void;
+}
+
+const STARTER_CODE = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My little project</title>
+  <style>
+    body {
+      display: grid;
+      min-height: 100vh;
+      place-content: center;
+      margin: 0;
+      background: #f5eaff;
+      color: #38105f;
+      font: 1.2rem system-ui, sans-serif;
+      text-align: center;
+    }
+    button {
+      padding: .8rem 1rem;
+      border: 0;
+      border-radius: 999px;
+      background: #9333ea;
+      color: white;
+      font: inherit;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Hello, world! ✨</h1>
+    <p>Change this page, then press Run to see what happens.</p>
+    <button onclick="this.textContent = 'You made this work! 🎉'">Click me</button>
+  </main>
+</body>
+</html>`;
+
+const GAME_SYMBOLS = ['🐱', '🌈', '⭐', '🦋', '🍓', '🚀'];
+
+function makeMemoryDeck(): string[] {
+  const cards = [...GAME_SYMBOLS, ...GAME_SYMBOLS];
+  for (let index = cards.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [cards[index], cards[swapIndex]] = [cards[swapIndex], cards[index]];
+  }
+  return cards;
 }
 
 const SUGGESTED_PROMPTS = [
@@ -36,6 +92,29 @@ const SUGGESTED_PROMPTS = [
 const LIL_SEARCH_URL = import.meta.env.DEV
   ? '/api/lil/search'
   : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/search`;
+const LIL_CHAT_URL = import.meta.env.DEV
+  ? '/api/lil/chat'
+  : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/chat`;
+
+async function requestLilChat(messages: LilChatMessage[], sessionId: string, mode: LilChatMode) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const client = getSupabaseClient();
+  if (client) {
+    const { data: { session } } = await client.auth.getSession();
+    if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+  }
+
+  const response = await fetch(LIL_CHAT_URL, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ messages, sessionId, mode }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Lil request failed with status ${response.status}`);
+  const answer = data.reply || data.answer;
+  if (typeof answer !== 'string' || !answer.trim()) throw new Error('Lil returned an empty reply.');
+  return answer.trim();
+}
 
 const isLocalHost =
   typeof window !== 'undefined' &&
@@ -50,8 +129,10 @@ const OPEN_WEBUI_URL =
 export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
   const { isAdmin } = useAdminStatus();
   const [query, setQuery] = useState('');
-  const [showOpenWebUI, setShowOpenWebUI] = useState(() =>
+  const [activeView, setActiveView] = useState<LilView>(() =>
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('openWebUI') === '1'
+      ? 'admin'
+      : 'search'
   );
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,9 +153,25 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     return [];
   });
   const [copied, setCopied] = useState(false);
+  const [chatMessages, setChatMessages] = useState<LilChatMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [codePrompt, setCodePrompt] = useState('');
+  const [code, setCode] = useState(STARTER_CODE);
+  const [codeError, setCodeError] = useState<string | null>(null);
+  const [codeLoading, setCodeLoading] = useState(false);
+  const [codeRunVersion, setCodeRunVersion] = useState(0);
+  const [gameDeck, setGameDeck] = useState(makeMemoryDeck);
+  const [flippedCards, setFlippedCards] = useState<number[]>([]);
+  const [matchedCards, setMatchedCards] = useState<number[]>([]);
+  const [gameMoves, setGameMoves] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
   const openWebUIFrameRef = useRef<HTMLIFrameElement>(null);
+  const gameLockRef = useRef(false);
+  const gameTimerRef = useRef<number | null>(null);
   const sessionIdRef = useRef(crypto.randomUUID());
 
   useEffect(() => {
@@ -84,7 +181,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
   }, [searchHistory]);
 
   useEffect(() => {
-    if (!showOpenWebUI || isLocalHost || !isAdmin) return;
+    if (activeView !== 'admin' || isLocalHost || !isAdmin) return;
 
     const frame = openWebUIFrameRef.current;
     const frameOrigin = new URL(OPEN_WEBUI_URL).origin;
@@ -113,7 +210,104 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
       active = false;
       window.removeEventListener('message', onMessage);
     };
-  }, [showOpenWebUI, isAdmin]);
+  }, [activeView, isAdmin]);
+
+  useEffect(() => {
+    if (activeView !== 'chat') return;
+    chatMessagesRef.current?.scrollTo({ top: chatMessagesRef.current.scrollHeight, behavior: 'smooth' });
+  }, [chatMessages, chatLoading, activeView]);
+
+  useEffect(() => () => {
+    if (gameTimerRef.current !== null) window.clearTimeout(gameTimerRef.current);
+  }, []);
+
+  const handleSendChat = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const text = chatDraft.trim();
+    if (!text || chatLoading) return;
+
+    const nextMessages = [...chatMessages, { role: 'user' as const, content: text }];
+    const requestMessages = nextMessages.slice(-12);
+    while (
+      requestMessages.length > 1 &&
+      requestMessages.reduce((total, message) => total + new TextEncoder().encode(message.content).byteLength, 0) > 12_000
+    ) {
+      requestMessages.shift();
+    }
+
+    setChatMessages(nextMessages);
+    setChatDraft('');
+    setChatError(null);
+    setChatLoading(true);
+    try {
+      const answer = await requestLilChat(requestMessages, sessionIdRef.current, 'chat');
+      setChatMessages((current) => [...current, { role: 'assistant', content: answer }]);
+    } catch (error) {
+      setChatMessages((current) => current.slice(0, -1));
+      setChatDraft(text);
+      setChatError(error instanceof Error ? error.message : 'Lil could not reply. Please try again.');
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const handleGenerateCode = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const prompt = codePrompt.trim();
+    if (!prompt || codeLoading) return;
+
+    setCodeLoading(true);
+    setCodeError(null);
+    try {
+      const answer = await requestLilChat([
+        {
+          role: 'user',
+          content: `Create a beginner-friendly, self-contained HTML page for this idea: ${prompt}. Reply with only the complete HTML document, including any CSS and JavaScript inside it. Keep the project playful and age-appropriate. Do not include external scripts, imports, network requests, or links to external resources.`
+        }
+      ], sessionIdRef.current, 'code');
+      const html = answer.replace(/^```(?:html)?\s*/i, '').replace(/\s*```$/, '').trim();
+      if (!/<html[\s>]/i.test(html) || !/<\/html>/i.test(html)) {
+        throw new Error('Lil’s reply was not a complete HTML page. Try describing the project another way.');
+      }
+      setCode(html);
+      setCodePrompt('');
+      setCodeRunVersion((version) => version + 1);
+    } catch (error) {
+      setCodeError(error instanceof Error ? error.message : 'Lil could not create the project. Please try again.');
+    } finally {
+      setCodeLoading(false);
+    }
+  };
+
+  const resetMemoryGame = () => {
+    if (gameTimerRef.current !== null) window.clearTimeout(gameTimerRef.current);
+    gameTimerRef.current = null;
+    gameLockRef.current = false;
+    setGameDeck(makeMemoryDeck());
+    setFlippedCards([]);
+    setMatchedCards([]);
+    setGameMoves(0);
+  };
+
+  const handleFlipCard = (index: number) => {
+    if (gameLockRef.current || matchedCards.includes(index) || flippedCards.includes(index)) return;
+    const nextFlipped = [...flippedCards, index];
+    setFlippedCards(nextFlipped);
+    if (nextFlipped.length === 2) {
+      setGameMoves((moves) => moves + 1);
+      if (gameDeck[nextFlipped[0]] === gameDeck[nextFlipped[1]]) {
+        setMatchedCards((matched) => [...matched, ...nextFlipped]);
+        setFlippedCards([]);
+      } else {
+        gameLockRef.current = true;
+        gameTimerRef.current = window.setTimeout(() => {
+          setFlippedCards([]);
+          gameLockRef.current = false;
+          gameTimerRef.current = null;
+        }, 800);
+      }
+    }
+  };
 
   const handleSearch = async (searchTerm: string) => {
     const trimmed = searchTerm.trim();
@@ -299,32 +493,33 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
           <span className="lil-avatar-emoji" role="img" aria-label="Lil Mascot">✨</span>
           <span className="lil-avatar-sparkle">🔍</span>
         </div>
-        <h1 className="lil-hero-title">Ask Lil</h1>
+        <h1 className="lil-hero-title">Meet Lil</h1>
         <p className="lil-hero-subtitle">
           Ask about curiosities, science, news, and learning with Lil, your friendly discovery guide.
         </p>
       </header>
 
       <div className="lil-view-toggle" role="group" aria-label="Choose Lil view">
-        <button
-          type="button"
-          className={`lil-view-toggle-button ${showOpenWebUI ? '' : 'active'}`}
-          aria-pressed={!showOpenWebUI}
-          onClick={() => setShowOpenWebUI(false)}
-        >
-          ✨ Lil
-        </button>
-        <button
-          type="button"
-          className={`lil-view-toggle-button ${showOpenWebUI ? 'active' : ''}`}
-          aria-pressed={showOpenWebUI}
-          onClick={() => setShowOpenWebUI(true)}
-        >
-          💬 Open WebUI
-        </button>
+        {([
+          ['search', 'Search'],
+          ['chat', 'Chat'],
+          ['code', 'Code'],
+          ['games', 'Games'],
+          ['admin', 'Admin'],
+        ] as const).map(([view, label]) => (
+          <button
+            key={view}
+            type="button"
+            className={`lil-view-toggle-button ${activeView === view ? 'active' : ''}`}
+            aria-pressed={activeView === view}
+            onClick={() => setActiveView(view)}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      {showOpenWebUI ? (
+      {activeView === 'admin' ? (
         <section className="lil-openwebui-view" aria-label="Open WebUI chat">
           <div className="lil-openwebui-toolbar">
             <p>Sign in to Open WebUI. If the sign-in page does not load here, open it in a new tab first.</p>
@@ -339,6 +534,174 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
             title="Open WebUI chat"
             loading="lazy"
           />
+        </section>
+      ) : activeView === 'chat' ? (
+        <section className="lil-chat-view" aria-label="Chat with Lil">
+          <header className="lil-chat-header">
+            <div>
+              <h2>Chat with Lil</h2>
+              <p>Keep asking questions—Lil will remember what you said in this conversation.</p>
+            </div>
+            {chatMessages.length > 0 && (
+              <button
+                type="button"
+                className="lil-chat-new"
+                onClick={() => {
+                  setChatMessages([]);
+                  setChatError(null);
+                }}
+                disabled={chatLoading}
+              >
+                New chat
+              </button>
+            )}
+          </header>
+          <div className="lil-chat-messages" ref={chatMessagesRef} role="log" aria-live="polite" aria-label="Chat messages">
+            {chatMessages.length === 0 ? (
+              <div className="lil-chat-welcome">
+                <span aria-hidden="true">✨</span>
+                <p>Hi, I’m Lil! What are you curious about?</p>
+              </div>
+            ) : chatMessages.map((message, index) => (
+              <article className={`lil-chat-message lil-chat-message-${message.role}`} key={`${index}-${message.role}`}>
+                <span className="lil-chat-message-label">{message.role === 'user' ? 'You' : 'Lil'}</span>
+                <div className="lil-chat-message-content">
+                  {message.role === 'assistant'
+                    ? renderFormattedAnswer(message.content)
+                    : <p>{message.content}</p>}
+                </div>
+              </article>
+            ))}
+            {chatLoading && (
+              <div className="lil-chat-thinking" role="status">
+                <span className="lil-spinner" aria-hidden="true" />
+                <span>Lil is thinking…</span>
+              </div>
+            )}
+          </div>
+          {chatError && <p className="lil-chat-error" role="alert">{chatError}</p>}
+          <form className="lil-chat-form" onSubmit={handleSendChat}>
+            <textarea
+              id="lil-chat-input"
+              aria-label="Message Lil"
+              value={chatDraft}
+              onChange={(event) => setChatDraft(event.target.value)}
+              placeholder="Write a message to Lil…"
+              maxLength={2_000}
+              rows={2}
+              disabled={chatLoading}
+            />
+            <button type="submit" className="lil-submit-btn" disabled={!chatDraft.trim() || chatLoading}>
+              {chatLoading ? 'Sending…' : 'Send'}
+              <span aria-hidden="true">➤</span>
+            </button>
+          </form>
+          <p className="lil-chat-note">Lil’s replies use a local AI model and may not always be accurate.</p>
+        </section>
+      ) : activeView === 'code' ? (
+        <section className="lil-code-view" aria-label="Create code with Lil">
+          <header className="lil-code-header">
+            <div>
+              <h2>Make something with code</h2>
+              <p>Describe a little project and Lil will create a page you can edit and run.</p>
+            </div>
+          </header>
+          <form className="lil-code-prompt" onSubmit={handleGenerateCode}>
+            <label htmlFor="lil-code-prompt">What would you like to make?</label>
+            <div>
+              <input
+                id="lil-code-prompt"
+                value={codePrompt}
+                onChange={(event) => setCodePrompt(event.target.value)}
+                maxLength={500}
+                placeholder="A colorful page with a button that changes the background"
+                disabled={codeLoading}
+              />
+              <button type="submit" className="lil-submit-btn" disabled={!codePrompt.trim() || codeLoading}>
+                {codeLoading ? 'Creating…' : 'Ask Lil'}
+              </button>
+            </div>
+          </form>
+          {codeError && <p className="lil-chat-error" role="alert">{codeError}</p>}
+          {codeLoading && (
+            <p className="lil-code-status" role="status">
+              <span className="lil-spinner" aria-hidden="true" /> Lil is creating your project…
+            </p>
+          )}
+          <div className="lil-code-workspace">
+            <section className="lil-code-editor-panel" aria-label="HTML code editor">
+              <div className="lil-code-panel-heading">
+                <h3>HTML</h3>
+                <button type="button" className="lil-chat-new" onClick={() => setCodeRunVersion((version) => version + 1)}>
+                  Run
+                </button>
+              </div>
+              <textarea
+                aria-label="Edit your HTML code"
+                className="lil-code-editor"
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoComplete="off"
+                autoCorrect="off"
+              />
+            </section>
+            <section className="lil-code-preview-panel" aria-label="Project preview">
+              <h3>Preview</h3>
+              <iframe
+                key={codeRunVersion}
+                className="lil-code-preview"
+                title="Your code project preview"
+                sandbox="allow-scripts"
+                srcDoc={`<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">${code}`}
+              />
+            </section>
+          </div>
+          <p className="lil-chat-note">Your project runs in a restricted preview. Keep personal information out of code.</p>
+        </section>
+      ) : activeView === 'games' ? (
+        <section className="lil-games-view" aria-label="Play games with Lil">
+          <header className="lil-games-header">
+            <div>
+              <h2>Lil’s Memory Match</h2>
+              <p>Find all six matching pairs. Take your time and see how few moves you need!</p>
+            </div>
+            <div className="lil-game-score" aria-live="polite">
+              <span>Moves</span>
+              <strong>{gameMoves}</strong>
+            </div>
+          </header>
+          {matchedCards.length === gameDeck.length ? (
+            <div className="lil-game-complete" role="status">
+              <span aria-hidden="true">🎉</span>
+              <h3>You found them all!</h3>
+              <p>You matched every pair in {gameMoves} {gameMoves === 1 ? 'move' : 'moves'}.</p>
+              <button type="button" className="lil-submit-btn" onClick={resetMemoryGame}>Play again</button>
+            </div>
+          ) : (
+            <>
+              <div className="lil-memory-grid" role="group" aria-label="Memory match cards">
+                {gameDeck.map((symbol, index) => {
+                  const isRevealed = flippedCards.includes(index) || matchedCards.includes(index);
+                  return (
+                    <button
+                      key={index}
+                      type="button"
+                      className={`lil-memory-card${isRevealed ? ' is-revealed' : ''}${matchedCards.includes(index) ? ' is-matched' : ''}`}
+                      onClick={() => handleFlipCard(index)}
+                      aria-label={isRevealed ? `Card ${index + 1}: ${symbol}${matchedCards.includes(index) ? ', matched' : ''}` : `Reveal card ${index + 1}`}
+                      aria-pressed={isRevealed}
+                      disabled={matchedCards.includes(index) || gameLockRef.current}
+                    >
+                      <span aria-hidden="true">{isRevealed ? symbol : '✦'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button type="button" className="lil-chat-new lil-game-reset" onClick={resetMemoryGame}>Restart game</button>
+            </>
+          )}
         </section>
       ) : (
         <>

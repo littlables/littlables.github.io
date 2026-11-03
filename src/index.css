@@ -5395,6 +5395,411 @@ html[data-system-font="true"] .story-provider-badge {
   outline-offset: 3px;
 }
 
+.lil-chat-view {
+  display: flex;
+  width: 100%;
+  max-width: 860px;
+  min-height: min(68vh, 680px);
+  flex-direction: column;
+  align-self: center;
+  overflow: hidden;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 20px;
+  background: var(--news-card-bg, #1b0d33);
+  box-shadow: var(--news-card-shadow, 0 4px 18px rgba(13, 5, 26, 0.35));
+}
+
+.lil-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-chat-header h2 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font: 700 1.2rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-chat-header p,
+.lil-chat-note {
+  margin: 0.25rem 0 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.82rem;
+}
+
+.lil-chat-new {
+  flex: 0 0 auto;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+  cursor: pointer;
+}
+
+.lil-chat-new:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.lil-chat-messages {
+  display: flex;
+  min-height: 280px;
+  flex: 1;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+  padding: 1.25rem;
+  overscroll-behavior: contain;
+}
+
+.lil-chat-welcome {
+  display: grid;
+  flex: 1;
+  place-content: center;
+  justify-items: center;
+  color: var(--news-text-muted, #c084fc);
+  text-align: center;
+}
+
+.lil-chat-welcome span {
+  font-size: 2rem;
+}
+
+.lil-chat-welcome p {
+  margin: 0.5rem 0 0;
+}
+
+.lil-chat-message {
+  width: fit-content;
+  max-width: min(88%, 42rem);
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+  border-radius: 16px;
+  background: var(--news-hover-bg, rgba(43, 20, 79, 0.7));
+}
+
+.lil-chat-message-user {
+  align-self: flex-end;
+  border-color: var(--news-accent, rgba(192, 132, 252, 0.5));
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.16));
+}
+
+.lil-chat-message-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.lil-chat-message-content {
+  color: var(--news-text, #fbf7ff);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.lil-chat-message-content p {
+  margin: 0.2rem 0;
+  white-space: pre-wrap;
+}
+
+.lil-chat-message-content .lil-answer-paragraph {
+  margin: 0.2rem 0 0.65rem;
+}
+
+.lil-chat-message-content .lil-answer-paragraph:last-child {
+  margin-bottom: 0;
+}
+
+.lil-chat-thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  align-self: flex-start;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.85rem;
+}
+
+.lil-chat-error {
+  margin: 0;
+  padding: 0.65rem 1.25rem 0;
+  color: #fca5a5;
+  font-size: 0.86rem;
+}
+
+.lil-chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.65rem;
+  padding: 0.85rem 1rem;
+  border-top: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-chat-form textarea {
+  width: 100%;
+  min-height: 48px;
+  max-height: 160px;
+  resize: vertical;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.3));
+  border-radius: 14px;
+  background: var(--news-bg, #10091d);
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+  line-height: 1.45;
+}
+
+.lil-chat-form textarea:focus-visible,
+.lil-chat-new:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-chat-form .lil-submit-btn {
+  flex: 0 0 auto;
+  min-height: 48px;
+}
+
+.lil-chat-note {
+  margin: 0;
+  padding: 0 1rem 0.8rem;
+  text-align: center;
+  font-size: 0.72rem;
+}
+
+.lil-code-view,
+.lil-games-view {
+  width: 100%;
+  max-width: 1000px;
+  align-self: center;
+  overflow: hidden;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 20px;
+  background: var(--news-card-bg, #1b0d33);
+  box-shadow: var(--news-card-shadow, 0 4px 18px rgba(13, 5, 26, 0.35));
+}
+
+.lil-code-header,
+.lil-games-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-code-header h2,
+.lil-games-header h2 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font: 700 1.2rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-code-header p,
+.lil-games-header p {
+  margin: 0.3rem 0 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.lil-code-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem;
+}
+
+.lil-code-prompt label,
+.lil-code-panel-heading h3,
+.lil-code-preview-panel h3 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.lil-code-prompt > div {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.lil-code-prompt input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.3));
+  border-radius: 12px;
+  background: var(--news-bg, #10091d);
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+}
+
+.lil-code-prompt input:focus-visible,
+.lil-code-editor:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-code-prompt .lil-submit-btn {
+  flex: 0 0 auto;
+}
+
+.lil-code-status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 1.25rem 0.75rem;
+  color: var(--news-text-muted, #c084fc);
+}
+
+.lil-code-workspace {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+  padding: 0 1.25rem 1rem;
+}
+
+.lil-code-editor-panel,
+.lil-code-preview-panel {
+  display: flex;
+  min-width: 0;
+  min-height: 360px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+  border-radius: 14px;
+  background: var(--news-bg, #10091d);
+}
+
+.lil-code-panel-heading,
+.lil-code-preview-panel > h3 {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-code-editor {
+  width: 100%;
+  min-height: 310px;
+  flex: 1;
+  resize: vertical;
+  padding: 0.85rem;
+  border: 0;
+  background: #130c20;
+  color: #e9d5ff;
+  font: 0.8rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.lil-code-preview {
+  display: block;
+  width: 100%;
+  min-height: 310px;
+  flex: 1;
+  border: 0;
+  background: #fff;
+}
+
+.lil-code-view > .lil-chat-note {
+  padding-bottom: 1rem;
+}
+
+.lil-games-view {
+  max-width: 650px;
+  padding-bottom: 1rem;
+}
+
+.lil-game-score {
+  display: grid;
+  min-width: 64px;
+  justify-items: center;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 14px;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.72rem;
+}
+
+.lil-game-score strong {
+  color: var(--news-text, #fbf7ff);
+  font-size: 1.1rem;
+}
+
+.lil-memory-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+}
+
+.lil-memory-card {
+  display: grid;
+  aspect-ratio: 1.2;
+  min-width: 0;
+  place-items: center;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.3));
+  border-radius: 16px;
+  background: linear-gradient(145deg, #55218a, #2b144f);
+  color: white;
+  font-size: clamp(1.5rem, 7vw, 2.5rem);
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.lil-memory-card:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.lil-memory-card.is-revealed {
+  background: var(--news-hover-bg, #2b144f);
+}
+
+.lil-memory-card.is-matched {
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(16, 185, 129, 0.16);
+  cursor: default;
+}
+
+.lil-game-reset {
+  display: block;
+  margin: 0 auto;
+}
+
+.lil-game-complete {
+  display: grid;
+  justify-items: center;
+  padding: 2rem 1rem;
+  color: var(--news-text, #fbf7ff);
+  text-align: center;
+}
+
+.lil-game-complete > span {
+  font-size: 3rem;
+}
+
+.lil-game-complete h3 {
+  margin: 0.75rem 0 0;
+  font: 700 1.5rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-game-complete p {
+  margin: 0.4rem 0 1rem;
+  color: var(--news-text-muted, #c084fc);
+}
+
 .lil-openwebui-view {
   width: 100%;
   overflow: hidden;
@@ -6196,5 +6601,66 @@ html[data-system-font="true"] .story-provider-badge {
   .lil-openwebui-frame {
     height: 72vh;
     min-height: 420px;
+  }
+}
+
+@media (max-width: 520px) {
+  .lil-view-toggle {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.1rem;
+    padding: 0.2rem;
+  }
+
+  .lil-view-toggle-button {
+    padding: 0.5rem 0.25rem;
+    font-size: 0.68rem;
+  }
+
+  .lil-chat-header {
+    align-items: flex-start;
+    padding: 0.85rem;
+  }
+
+  .lil-chat-header p {
+    max-width: 15rem;
+    font-size: 0.75rem;
+  }
+
+  .lil-chat-messages {
+    padding: 0.85rem;
+  }
+
+  .lil-chat-message {
+    max-width: 94%;
+  }
+
+  .lil-chat-form {
+    gap: 0.4rem;
+    padding: 0.65rem;
+  }
+
+  .lil-chat-form .lil-submit-btn {
+    width: auto;
+    padding: 0.7rem 0.75rem;
+  }
+
+  .lil-code-prompt > div {
+    flex-direction: column;
+  }
+
+  .lil-code-prompt .lil-submit-btn {
+    width: 100%;
+  }
+
+  .lil-code-workspace {
+    grid-template-columns: 1fr;
+    padding-inline: 0.75rem;
+  }
+
+  .lil-memory-grid {
+    gap: 0.5rem;
+    padding-inline: 0.75rem;
   }
 }

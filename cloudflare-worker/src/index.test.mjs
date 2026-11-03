@@ -132,6 +132,54 @@ test('POST /api/lil/search forwards the browser session ID after admin authentic
   }
 });
 
+test('POST /api/lil/chat forwards bounded code requests after admin authentication', async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  let forwardedPath;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/api/lil/chat') {
+      forwardedPath = url.pathname;
+      forwarded = JSON.parse(options.body);
+      return Response.json({ reply: 'Hello again.' });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const messages = [
+      { role: 'user', content: 'Hi Lil!' },
+      { role: 'assistant', content: 'Hello! What are you curious about?' },
+      { role: 'user', content: 'Tell me about Saturn.' }
+    ];
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer test-admin-token'
+      },
+      body: JSON.stringify({ messages, sessionId: 'chat-session-123', mode: 'code' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      LIL_API_ORIGIN: 'https://lil-api.example',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.equal(forwardedPath, '/api/lil/chat');
+    assert.deepEqual(forwarded, { messages, mode: 'code', sessionId: 'chat-session-123', source: 'web-lil-code' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Open WebUI gateway gives the sign-in relay to unauthenticated visitors', async () => {
   const response = await worker.fetch(new Request('https://lil.littlables.com/'), {
     LIL_WEBUI_SESSION_SECRET: 'test-webui-session-secret-at-least-32-chars'

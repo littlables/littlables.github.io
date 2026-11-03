@@ -24,7 +24,7 @@ The dev server runs at `http://0.0.0.0:3000`.
 
 ### Local Lil with Open WebUI and Ollama
 
-Lil's admin-only `/lil` page now offers two views: the existing Lil page and Open WebUI. Both use the local Ollama model. Lil requests still pass through the Cloudflare Worker and the authenticated laptop API; the API archives each user prompt, assistant response, and runtime error in SQLite/FTS and JSONL. Open WebUI has its own persistent data in `~/.lil/db/open-webui/`.
+Lil's admin-only `/lil` page offers five views: Search, Chat, Code, Games, and Admin. Search, Chat, and Code use the local Ollama model through the authenticated laptop API; Chat carries recent turns as conversation context, and Code generates editable HTML in a restricted preview. Games includes a playable memory match. The API archives user prompts, assistant responses, and runtime errors in SQLite/FTS and JSONL. Admin opens Open WebUI, which has its own persistent data in `~/.lil/db/open-webui/`.
 
 The laptop runtime stays outside this website repository in `~/.lil/`. It contains the API, logger, Open WebUI Compose configuration, service settings, and handoff notes. The public website remains on Cloudflare Pages; its Worker continues to authenticate site-admin requests before forwarding them to the laptop API.
 
