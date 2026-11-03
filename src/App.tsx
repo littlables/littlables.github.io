@@ -24,6 +24,7 @@ import { SpaceRoutePage } from './components/SpaceRoutePage';
 import { WorksheetsPanel } from './components/WorksheetsPanel';
 import { FallingEmojis } from './components/FallingEmojis';
 import { LilPage } from './components/LilPage';
+import { LilPreviewPage } from './components/LilPreviewPage';
 import { LilAvatar } from './components/LilAvatar';
 import type { OpenProfileTarget } from './components/PlayroomPage';
 import { useAuth } from './contexts/AuthContext';
@@ -135,7 +136,7 @@ function prioritizeByInterests(stories: NewsItem[], interests: PillConfig[]): Ne
 export const App: React.FC = () => {
   const { theme, setTheme } = useTheme();
   useSystemFont();
-  const { profile } = useAuth();
+  const { profile, user } = useAuth();
   const { isAdmin, checking: checkingAdmin } = useAdminStatus();
   const [adminEditStory, setAdminEditStory] = useState<NewsItem | null>(null);
   const [emojiPoints, setEmojiPoints] = useState<number>(() => {
@@ -265,8 +266,8 @@ export const App: React.FC = () => {
     }
     if (selectedStory?.item?.title) {
       document.title = `${SITE_TITLE_BASE} | ${selectedStory.item.title}`;
-    } else if (lilRoute && isAdmin) {
-      document.title = `${SITE_TITLE_BASE} | Ask Lil`;
+    } else if (lilRoute) {
+      document.title = `${SITE_TITLE_BASE} | ${user ? 'Ask Lil' : 'Meet Lil'}`;
     } else if (aboutRoute) {
       document.title = `${SITE_TITLE_BASE} | about`;
     } else if (category !== 'all') {
@@ -277,7 +278,7 @@ export const App: React.FC = () => {
     } else {
       document.title = SITE_TITLE_BASE;
     }
-  }, [selectedStory, category, profileRoute, playroomOrSpaceRoute, spaceRoute, playroomSpaceRoute, aboutRoute, lilRoute, tasteReaderRoute, isAdmin]);
+  }, [selectedStory, category, profileRoute, playroomOrSpaceRoute, spaceRoute, playroomSpaceRoute, aboutRoute, lilRoute, tasteReaderRoute, user]);
 
   // Ensure initial URL reflects the active topic if not already in the address bar
   useEffect(() => {
@@ -292,35 +293,19 @@ export const App: React.FC = () => {
     }
   }, [lilRoute, tasteReaderRoute]);
 
-  // Guard the /lil route: only accessible when logged in as admin.
-  // If a non-admin directly visits /lil, return them to the home feed.
-  useEffect(() => {
-    if (checkingAdmin) return;
-    if (lilRoute && !isAdmin) {
-      setLilRoute(false);
-      if (typeof window !== 'undefined' && window.location.pathname.startsWith('/lil')) {
-        window.history.replaceState(null, '', '/');
-      }
-    }
-  }, [lilRoute, isAdmin, checkingAdmin]);
-
   // Listen to browser Back / Forward navigation
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handlePopState = () => {
       const urlLil = parseLilFromUrl();
       if (urlLil) {
-        if (!isAdmin && !checkingAdmin) {
-          setLilRoute(false);
-        } else {
-          setLilRoute(true);
-          setAboutRoute(false);
-          setTasteReaderRoute(false);
-          setPlayroomOrSpaceRoute(null);
-          setSpaceRoute(null);
-          setPlayroomSpaceRoute(null);
-          setProfileRoute(null);
-        }
+        setLilRoute(true);
+        setAboutRoute(false);
+        setTasteReaderRoute(false);
+        setPlayroomOrSpaceRoute(null);
+        setSpaceRoute(null);
+        setPlayroomSpaceRoute(null);
+        setProfileRoute(null);
         return;
       }
       setLilRoute(false);
@@ -664,7 +649,6 @@ export const App: React.FC = () => {
   };
 
   const handleOpenLil = () => {
-    if (!isAdmin) return;
     setSelectedStory(null);
     setActiveStoryParam(null);
     setProfileRoute(null);
@@ -783,14 +767,14 @@ export const App: React.FC = () => {
           lastCollectedEmoji={lastCollectedEmoji}
           gameEnabled={gameEnabled}
           onToggleGame={handleToggleGame}
-          onOpenLil={isAdmin ? handleOpenLil : undefined}
-          isLilActive={lilRoute && isAdmin}
+          onOpenLil={handleOpenLil}
+          isLilActive={lilRoute}
         />
 
-        <WorksheetsPanel />
+        {!lilRoute && <WorksheetsPanel />}
 
         {/* Category nav is hidden on standalone lil/about/taste-reader/profile/playroom/space pages — those show their own views, not the main feed. */}
-        {!aboutRoute && !(lilRoute && isAdmin) && !tasteReaderRoute && !profileRoute && !playroomOrSpaceRoute && !spaceRoute && !playroomSpaceRoute && (
+        {!aboutRoute && !lilRoute && !tasteReaderRoute && !profileRoute && !playroomOrSpaceRoute && !spaceRoute && !playroomSpaceRoute && (
           <CategoryNav
             currentCategory={category}
             onSelectCategory={handleSelectCategory}
@@ -798,10 +782,14 @@ export const App: React.FC = () => {
           />
         )}
 
-        {lilRoute && isAdmin ? (
-          <main className="news-grid lil-main-grid">
-            <LilPage onHome={handleHomeRefresh} />
-          </main>
+        {lilRoute ? (
+          user ? (
+            <main className="news-grid lil-main-grid">
+              <LilPage onHome={handleHomeRefresh} />
+            </main>
+          ) : (
+            <LilPreviewPage onAdminSignIn={() => setActiveDialog('signin')} />
+          )
         ) : aboutRoute ? (
           <main className="news-grid">
             <AboutPage
@@ -983,7 +971,7 @@ export const App: React.FC = () => {
       <Footer
         onOpenAbout={() => setActiveDialog('about')}
         onOpenDisclaimer={() => setActiveDialog('disclaimer')}
-        onOpenLil={isAdmin ? handleOpenLil : undefined}
+        onOpenLil={handleOpenLil}
       />
 
       <InfoDialog

@@ -5078,6 +5078,228 @@ html[data-system-font="true"] .story-provider-badge {
   width: 100%;
 }
 
+.lil-preview-page {
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: clamp(1.25rem, 4vw, 3rem) 0 3rem;
+}
+
+.lil-preview-hero {
+  position: relative;
+  display: flex;
+  min-height: 340px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 2rem 1rem 2.5rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 30px;
+  background:
+    radial-gradient(ellipse at 50% 35%, rgba(147, 51, 234, 0.2), transparent 55%),
+    var(--news-card-bg, #1b0d33);
+  text-align: center;
+}
+
+.lil-preview-avatar {
+  position: relative;
+  z-index: 1;
+  width: 112px;
+  height: 112px;
+  margin-bottom: 0.8rem;
+  filter: drop-shadow(0 10px 24px rgba(13, 5, 26, 0.38));
+}
+
+.lil-preview-orbit {
+  position: absolute;
+  top: 63px;
+  left: 50%;
+  width: 210px;
+  height: 92px;
+  border: 1px solid rgba(216, 180, 254, 0.18);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.lil-preview-orbit-one {
+  transform: translateX(-50%) rotate(-18deg);
+}
+
+.lil-preview-orbit-two {
+  transform: translateX(-50%) rotate(18deg);
+}
+
+.lil-preview-eyebrow {
+  position: relative;
+  z-index: 1;
+  margin: 0 0 0.4rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.lil-preview-hero h1 {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font-family: 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: clamp(2.6rem, 8vw, 4rem);
+  line-height: 1;
+}
+
+.lil-preview-intro {
+  max-width: 540px;
+  margin: 0.8rem 0 1.15rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: clamp(0.95rem, 2.2vw, 1.1rem);
+  line-height: 1.65;
+}
+
+.lil-preview-coming-soon,
+.lil-preview-feature-soon {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(216, 180, 254, 0.3);
+  border-radius: 999px;
+  background: rgba(147, 51, 234, 0.16);
+  color: var(--news-text, #fbf7ff);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lil-preview-coming-soon {
+  padding: 0.45rem 0.9rem;
+}
+
+.lil-preview-features {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.lil-preview-feature {
+  display: flex;
+  min-height: 220px;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 1.25rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+  border-radius: 20px;
+  background: var(--news-card-bg, #1b0d33);
+  box-shadow: var(--news-card-shadow, 0 4px 18px rgba(13, 5, 26, 0.35));
+}
+
+.lil-preview-feature-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  margin-bottom: 1rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 15px;
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.14));
+  font-size: 1.5rem;
+}
+
+.lil-preview-feature h2,
+.lil-preview-admin h2 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font-family: 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 1.15rem;
+}
+
+.lil-preview-feature p,
+.lil-preview-admin p {
+  margin: 0.5rem 0 1rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.lil-preview-feature-soon {
+  margin-top: auto;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.65rem;
+}
+
+.lil-preview-admin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 20px;
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.1));
+}
+
+.lil-preview-admin p {
+  margin-bottom: 0;
+}
+
+.lil-preview-admin button {
+  flex: 0 0 auto;
+  padding: 0.75rem 1.15rem;
+  border: 1px solid var(--news-pill-active-border, rgba(245, 208, 254, 0.4));
+  border-radius: 999px;
+  background: var(--news-pill-active-bg, linear-gradient(135deg, #9333ea, #d946ef));
+  color: var(--news-pill-active-text, #fff);
+  font: 700 0.9rem 'Varela Round', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  cursor: pointer;
+  transition: filter 0.18s ease, transform 0.18s ease;
+}
+
+.lil-preview-admin button:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.lil-preview-admin button:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 3px;
+}
+
+@media (max-width: 820px) {
+  .lil-preview-features {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .lil-preview-hero {
+    min-height: 310px;
+    border-radius: 22px;
+  }
+
+  .lil-preview-features {
+    gap: 0.7rem;
+  }
+
+  .lil-preview-feature {
+    min-height: 225px;
+    padding: 1rem;
+  }
+
+  .lil-preview-admin {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 1.1rem;
+  }
+
+  .lil-preview-admin button {
+    width: 100%;
+  }
+}
+
 .lil-page-container {
   width: 100%;
   max-width: 860px;
