@@ -50,6 +50,46 @@ test('POST /api/lil/search is registered and requires admin authentication', asy
   assert.equal((await response.json()).error, 'Supabase sign-in is required');
 });
 
+test('POST /api/lil/search forwards the browser session ID after admin authentication', async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/api/lil/search') {
+      forwarded = JSON.parse(options.body);
+      return Response.json({ reply: 'Hello from Lil.' });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer site-access-token'
+      },
+      body: JSON.stringify({ query: 'hello', sessionId: 'browser-session-123' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      LIL_API_ORIGIN: 'https://lil-api.example',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(forwarded, { query: 'hello', sessionId: 'browser-session-123' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('admin page offers GitHub sign-in when there is no valid session', async () => {
   const response = await worker.fetch(new Request('https://worker.example/admin'), {}, {});
   assert.equal(response.status, 200);

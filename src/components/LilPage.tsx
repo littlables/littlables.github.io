@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getSupabaseClient } from '../services/supabaseService';
-import { NEWS_CONFIG } from '../constants/config';
+import { LIL_CONFIG, NEWS_CONFIG } from '../constants/config';
 
 export interface LilSource {
   title: string;
@@ -36,8 +36,19 @@ const LIL_SEARCH_URL = import.meta.env.DEV
   ? '/api/lil/search'
   : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/search`;
 
+const isLocalHost =
+  typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' ||
+    window.location.hostname.endsWith('.localhost') ||
+    window.location.hostname === '127.0.0.1');
+const OPEN_WEBUI_URL =
+  import.meta.env.DEV || isLocalHost
+    ? 'http://127.0.0.1:3011/'
+    : LIL_CONFIG.openWebUIUrl;
+
 export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
   const [query, setQuery] = useState('');
+  const [showOpenWebUI, setShowOpenWebUI] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentResult, setCurrentResult] = useState<LilSearchResult | null>(null);
@@ -257,6 +268,42 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
         </p>
       </header>
 
+      <div className="lil-view-toggle" role="group" aria-label="Choose Lil view">
+        <button
+          type="button"
+          className={`lil-view-toggle-button ${showOpenWebUI ? '' : 'active'}`}
+          aria-pressed={!showOpenWebUI}
+          onClick={() => setShowOpenWebUI(false)}
+        >
+          ✨ Lil
+        </button>
+        <button
+          type="button"
+          className={`lil-view-toggle-button ${showOpenWebUI ? 'active' : ''}`}
+          aria-pressed={showOpenWebUI}
+          onClick={() => setShowOpenWebUI(true)}
+        >
+          💬 Open WebUI
+        </button>
+      </div>
+
+      {showOpenWebUI ? (
+        <section className="lil-openwebui-view" aria-label="Open WebUI chat">
+          <div className="lil-openwebui-toolbar">
+            <p>Sign in to Open WebUI. If the sign-in page does not load here, open it in a new tab first.</p>
+            <a href={OPEN_WEBUI_URL} target="_blank" rel="noopener noreferrer">
+              Open in new tab ↗
+            </a>
+          </div>
+          <iframe
+            className="lil-openwebui-frame"
+            src={OPEN_WEBUI_URL}
+            title="Open WebUI chat"
+            loading="lazy"
+          />
+        </section>
+      ) : (
+        <>
       {/* Search Input Box */}
       <section className="lil-search-section" aria-label="Search with Lil">
         <form className="lil-search-form" onSubmit={handleSubmit}>
@@ -368,7 +415,11 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
             <div className="lil-result-meta-top">
               <span className="lil-result-badge">
                 <span className="lil-result-badge-icon">🖥️</span>
-                {currentResult.provider === 'ollama' ? 'Local Ollama' : currentResult.provider || 'Ollama'}
+                {currentResult.provider === 'openwebui'
+                  ? 'Open WebUI'
+                  : currentResult.provider === 'ollama'
+                    ? 'Local Ollama'
+                    : currentResult.provider || 'Ollama'}
               </span>
               <span className="lil-result-model-badge">{currentResult.model || 'llama3.2:3b'}</span>
             </div>
@@ -487,6 +538,8 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
             ))}
           </div>
         </section>
+      )}
+        </>
       )}
     </div>
   );

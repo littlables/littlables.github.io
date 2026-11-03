@@ -33,7 +33,6 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
-    hmr: { port: 3011 },
   },
   preview: {
     host: '0.0.0.0',

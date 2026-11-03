@@ -3294,8 +3294,8 @@ export default {
         return jsonResponse({ items: [], count: 0, error: err.message }, 500);
       }
     }
-    // Lil runs on the admin's Ollama laptop. The Worker verifies site admin
-    // access first, then forwards only this request to the private tunnel origin.
+    // Lil runs on the admin's laptop. The Worker verifies site admin access
+    // first, then forwards only this request to the private tunnel origin.
     if (request.method === 'POST' && pathname === '/api/lil/search') {
       try {
         const contentLength = Number(request.headers.get('Content-Length') || 0);
@@ -3314,6 +3314,10 @@ export default {
         const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
         if (!query) return jsonResponse({ error: 'Please provide a search question or topic.' }, 400);
         if (query.length > 500) return jsonResponse({ error: 'Lil questions must be 500 characters or fewer.' }, 400);
+        const forwardedRequest = { query };
+        if (typeof payload.sessionId === 'string' && payload.sessionId.trim()) {
+          forwardedRequest.sessionId = payload.sessionId.trim().slice(0, 200);
+        }
 
         const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
         if (!configuredOrigin) return jsonResponse({ error: 'Lil laptop connection is not configured.' }, 503);
@@ -3334,7 +3338,7 @@ export default {
             'Content-Type': 'application/json',
             Authorization: request.headers.get('Authorization') || ''
           },
-          body: JSON.stringify({ query }),
+          body: JSON.stringify(forwardedRequest),
           signal: AbortSignal.timeout(125_000)
         });
         const result = await upstream.json().catch(() => ({ error: 'Lil laptop returned an invalid response.' }));
@@ -3866,4 +3870,3 @@ export default {
     }
   }
 };
-
