@@ -62,12 +62,7 @@ if (( node_major < 22 )); then
   echo "Installed $(node --version) and npm."
 fi
 
-if [[ ! -f .env ]]; then
-  cp .env.example .env
-  echo "Created .env from .env.example. You can change the Ollama model there."
-fi
-
-if [[ ! -x node_modules/.bin/tsx ]]; then
+if [[ ! -x node_modules/.bin/vite ]]; then
   if command -v npm >/dev/null 2>&1; then
     echo "Installing littlables dependencies with npm…"
     npm install
@@ -80,40 +75,6 @@ if [[ ! -x node_modules/.bin/tsx ]]; then
   fi
 fi
 
-ollama_base_url="${OLLAMA_BASE_URL:-}"
-ollama_model="${OLLAMA_MODEL:-}"
-if [[ -f .env ]]; then
-  if [[ -z "$ollama_base_url" ]]; then
-    ollama_base_url="$(sed -n 's/^OLLAMA_BASE_URL=//p' .env | tail -n 1)"
-    ollama_base_url="${ollama_base_url%\"}"; ollama_base_url="${ollama_base_url#\"}"
-    ollama_base_url="${ollama_base_url%\'}"; ollama_base_url="${ollama_base_url#\'}"
-  fi
-  if [[ -z "$ollama_model" ]]; then
-    ollama_model="$(sed -n 's/^OLLAMA_MODEL=//p' .env | tail -n 1)"
-    ollama_model="${ollama_model%\"}"; ollama_model="${ollama_model#\"}"
-    ollama_model="${ollama_model%\'}"; ollama_model="${ollama_model#\'}"
-  fi
-fi
-ollama_base_url="${ollama_base_url:-http://127.0.0.1:11434}"
-ollama_model="${ollama_model:-llama3.2:3b}"
-
-echo "Starting littlables at http://127.0.0.1:3000"
-echo "The local Lil API will listen on http://127.0.0.1:3010"
-
-# Start the logger first (it runs in background and won't block)
-echo "Starting forever logger..."
-cd scripts && node lil-forever-logger.js &
-LOGGER_PID=$!
-
-if command -v curl >/dev/null 2>&1 && curl --silent --fail --max-time 2 "${ollama_base_url%/}/api/tags" >/dev/null; then
-  echo "Ollama API is reachable at ${ollama_base_url} (configured model: ${ollama_model})."
-else
-  echo "Ollama is not reachable at ${ollama_base_url}. The server will start, but Lil answers need Ollama running with ${ollama_model} installed." >&2
-fi
-
-# Start the main server after logger is up
-exec ./node_modules/.bin/tsx server.ts &
-SERVER_PID=$!
-
-echo "Main server PID: $SERVER_PID"
-wait $SERVER_PID
+echo "Starting the littlables website dev server at http://127.0.0.1:3000"
+echo "For local Lil requests, start the API with ~/.lil/start-api.sh"
+exec ./node_modules/.bin/vite --host 0.0.0.0 --port 3000

@@ -24,31 +24,37 @@ The dev server runs at `http://0.0.0.0:3000`.
 
 ### Local Lil with Ollama
 
-The admin-only `/lil` page uses Ollama on the admin's laptop. Install and start [Ollama](https://ollama.com), then download a model such as `llama3.2:3b` with `ollama pull llama3.2:3b`. Set `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, and `LIL_API_PORT` in `.env` (see `.env.example`). Ollama's API should be available at `http://127.0.0.1:11434`.
+The admin-only `/lil` page uses Ollama on the admin's laptop. Install and start [Ollama](https://ollama.com), then download the configured model (`ollama pull llama3.2:3b` by default). Laptop API settings live in `~/.lil/.env`; use `~/.lil/.env.example` as a template on a new laptop. Ollama's API should be available at `http://127.0.0.1:11434`.
 
-For local development, run `npm run dev` and open `/lil` while signed in as an admin. The dev page sends requests to the local Node server. On the deployed site, Lil sends requests to the Cloudflare Worker, which verifies the signed-in user is an admin and forwards the request to the laptop's Lil-only API listener. That listener is bound to `127.0.0.1:3010`; the Vite dev server and Ollama port are not exposed through the tunnel.
+For local development, run `npm run dev` and open `/lil` while signed in as an admin. Vite proxies local Lil requests to the laptop API. In production, build the website on Cloudflare Pages with `npm run build` and `dist` as the output directory; only Ollama and the authenticated Lil API run on the laptop. The Cloudflare Worker verifies the signed-in user is an admin and forwards requests to the laptop's Lil API listener, bound to `127.0.0.1:3010`. The laptop's website, Vite server, and Ollama port are not exposed through the tunnel.
 
-For one-step local startup, run `./scripts/start-lil-local.sh`. If Node.js 22 or newer is missing, it installs [Node.js 24 LTS](https://nodejs.org/en/about/previous-releases) under `~/.local` and verifies the download checksum. It creates `.env` from the example if needed, installs project dependencies if needed, checks whether Ollama is reachable, then starts the app and API. Press Ctrl+C to stop it. Automatic Node.js setup supports Linux x64 and arm64.
+The laptop-only Lil API, logger, configuration, and data are kept together outside the website repository in `~/.lil/`. This folder contains the API source, its dependencies, `.env`, and `LIL_HANDOFF.md`. SQLite and JSONL database/log files are kept in `~/.lil/db/`. The laptop runtime is not deployed with the website.
 
-The Cloudflare side is provisioned: the `littlables-lil` tunnel routes `lil-api.littlables.com` to `http://127.0.0.1:3010`, with a 404 catch-all, and the Worker has `LIL_API_ORIGIN=https://lil-api.littlables.com`. The local API listener exposes only `/api/lil/search`; the Vite server and Ollama port are not in the tunnel.
+For local website development, run `npm run dev`. Vite proxies local `/api/lil` requests to `127.0.0.1:3010`, so start the external API separately with `~/.lil/start-api.sh`. The repository's `scripts/start-lil-local.sh` can bootstrap Node.js and website dependencies before starting Vite; it does not start the Lil API.
 
-On the laptop, install `cloudflared` and open Cloudflare Dashboard → **Networking → Tunnels → littlables-lil → Add a replica**. Copy and run the Linux install command shown there; it contains the private tunnel token and installs `cloudflared` as a system service. Do not paste the token into chat or commit it. Start the littlables server with `npm run dev` and confirm Ollama is running. For littlables to start on boot too, install the sample unit in `ops/systemd/littlables-lil.service.example`:
+The Cloudflare side is provisioned: the `littlables-lil` tunnel routes `lil-api.littlables.com` to `http://127.0.0.1:3010`, with a 404 catch-all, and the Worker has `LIL_API_ORIGIN=https://lil-api.littlables.com`. The local API listener exposes the authenticated `/api/lil/search` and `/api/lil/chat` endpoints; the Vite server and Ollama port are not in the tunnel.
+
+On the laptop, install Ollama and download the configured model (`ollama pull llama3.2:3b` for the default). Install `cloudflared`, then open Cloudflare Dashboard → **Networking → Tunnels → littlables-lil → Add a replica**. Copy and run the Linux install command shown there; it contains the private tunnel token and installs `cloudflared` as a system service. Do not paste the token into chat or commit it. Keep the Cloudflare Tunnel service enabled so the API is reachable by the Worker.
+
+After installing the tunnel service, enable it at boot with `sudo systemctl enable --now cloudflared` and check it with `sudo systemctl status cloudflared`. The tunnel's public hostname should point to `http://127.0.0.1:3010`; do not configure routes for the website port `3000` or Ollama port `11434`.
+
+Install the external API dependencies once with `npm install --prefix ~/.lil`. The laptop's systemd unit is kept outside the website repository at `~/.lil/littlables-lil.service`. Install it and enable the local services:
 
 ```sh
-sudo cp ops/systemd/littlables-lil.service.example /etc/systemd/system/littlables-lil.service
+sudo cp ~/.lil/littlables-lil.service /etc/systemd/system/littlables-lil.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now littlables-lil
+sudo systemctl enable --now ollama littlables-lil
 ```
 
-The laptop must be awake and online, with Ollama, the littlables service, and Cloudflare Tunnel running. If it sleeps or loses internet, Lil is unavailable until it reconnects. The Cloudflare Worker code must also be deployed before the public page can use the new route. Ollama answers are generated locally and do not include live search or verified sources.
+Check the local API with `curl http://127.0.0.1:3010/api/health` and inspect logs with `sudo journalctl -u littlables-lil -f`. The laptop must be awake and online, with Ollama, the Lil API service, and Cloudflare Tunnel running. If it sleeps or loses internet, Lil is unavailable until it reconnects. The Cloudflare Worker code must also be deployed before the public page can use the route. Ollama answers are generated locally and do not include live search or verified sources.
 
 ### Local Lil model call
 
 - **Model:** Set by `OLLAMA_MODEL` (default `llama3.2:3b`)
-- **Location:** `server.ts` → `/api/lil/search`
+- **Location:** `~/.lil/lil-api.mjs` → `/api/lil/search`
 - **Trigger:** Admin submits a question on `/lil`
-- **What it does:** Sends the question to the Ollama API on the laptop and returns the answer to the page. The Cloudflare Worker verifies the Supabase admin session before forwarding deployed requests through the laptop tunnel.
-- **Availability:** The laptop, Ollama, littlables server, and Cloudflare Tunnel must remain online for deployed Lil requests to work.
+- **What it does:** Sends the question to the Ollama API on the laptop, archives the exchange, and returns the answer to the page. The Cloudflare Worker verifies the Supabase admin session before forwarding deployed requests through the laptop tunnel.
+- **Availability:** The laptop, Ollama, Lil API service, and Cloudflare Tunnel must remain online for deployed Lil requests to work.
 
 
 ## AI / LLM usage (Cloudflare Workers AI)
@@ -158,4 +164,3 @@ Configure the following GitHub Actions repository secrets for Worker deployment:
 - `CLOUDFLARE_API_TOKEN` — Cloudflare API token with **Edit Cloudflare Workers** permissions.
 - `CLOUDFLARE_ACCOUNT_ID` — Your Cloudflare Account ID.
 - `WRANGLER_TOML` *(optional)* — Custom `wrangler.toml` contents if not using `cloudflare-worker/wrangler.example.toml`.
-

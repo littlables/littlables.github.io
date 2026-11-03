@@ -46,7 +46,12 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
       const saved = localStorage.getItem('littlables_lil_history');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed.slice(0, 10);
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((item) => item && typeof item.query === 'string')
+            .map((item) => ({ ...item, answer: item.answer || item.reply || '' }))
+            .slice(0, 10);
+        }
       }
     } catch {}
     return [];
@@ -54,6 +59,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
   const [copied, setCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const sessionIdRef = useRef(crypto.randomUUID());
 
   useEffect(() => {
     try {
@@ -83,7 +89,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
       const response = await fetch(LIL_SEARCH_URL, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ query: trimmed }),
+        body: JSON.stringify({ query: trimmed, sessionId: sessionIdRef.current }),
       });
 
       if (!response.ok) {
@@ -92,13 +98,14 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
       }
 
       const data = await response.json();
+      const answer = data.reply || data.answer || 'No answer generated.';
       const result: LilSearchResult = {
         query: trimmed,
-        answer: data.answer || 'No answer generated.',
+        answer,
         searchQueries: Array.isArray(data.searchQueries) ? data.searchQueries : [],
         sources: Array.isArray(data.sources) ? data.sources : [],
-        apiKeyNotice: data.apiKeyNotice,
-        provider: data.provider || 'ollama',
+        apiKeyNotice: data.apiKeyNotice || undefined,
+        provider: data.provider || 'local-ollama',
         model: data.model || 'llama3.2:3b',
         timestamp: Date.now(),
       };
