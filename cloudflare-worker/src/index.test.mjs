@@ -97,7 +97,11 @@ test('Open WebUI gateway gives the sign-in relay to unauthenticated visitors', a
 
   assert.equal(response.status, 200);
   assert.match(response.headers.get('Content-Security-Policy'), /frame-ancestors https:\/\/littlables\.com/);
-  assert.match(await response.text(), /LITTLABLES_OPENWEBUI_AUTH_REQUIRED/);
+  const html = await response.text();
+  assert.match(html, /LITTLABLES_OPENWEBUI_AUTH_REQUIRED/);
+  assert.match(html, /class="continue"/);
+  assert.match(html, /background: linear-gradient\(145deg/);
+  assert.match(html, /aria-live="polite"/);
 });
 
 test('Open WebUI gateway rejects sign-in from non-admin site accounts', async () => {

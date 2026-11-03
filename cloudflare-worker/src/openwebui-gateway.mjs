@@ -81,12 +81,132 @@ async function hasValidSession(request, secret) {
 function relayPage() {
   const html = `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in required</title></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#160c2b">
+  <title>Sign in required | Littlables Lil</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: 'Quicksand', 'Segoe UI', sans-serif;
+      color: #fbf7ff;
+      background: #10091d;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      min-height: 100svh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        radial-gradient(ellipse at 18% 18%, rgba(147, 51, 234, .22), transparent 42%),
+        radial-gradient(ellipse at 86% 82%, rgba(217, 70, 239, .13), transparent 38%),
+        #10091d;
+    }
+    main {
+      width: min(100%, 480px);
+      padding: clamp(28px, 7vw, 48px);
+      border: 1px solid rgba(216, 180, 254, .22);
+      border-radius: 28px;
+      background: linear-gradient(145deg, rgba(38, 21, 64, .96), rgba(25, 13, 43, .98));
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .38), 0 0 50px rgba(147, 51, 234, .1);
+      text-align: center;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 28px;
+      color: #e9d5ff;
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .brand-mark {
+      display: grid;
+      width: 36px;
+      height: 36px;
+      place-items: center;
+      border: 1px solid rgba(216, 180, 254, .3);
+      border-radius: 13px;
+      background: linear-gradient(145deg, #9333ea, #d946ef);
+      box-shadow: 0 5px 18px rgba(168, 85, 247, .3);
+      font-size: 19px;
+      letter-spacing: 0;
+    }
+    h1 {
+      margin: 0;
+      font-family: 'Fredoka', 'Trebuchet MS', sans-serif;
+      font-size: clamp(1.8rem, 7vw, 2.35rem);
+      font-weight: 600;
+      letter-spacing: -.025em;
+    }
+    .description {
+      margin: 14px 0 26px;
+      color: #c4b5d7;
+      font-size: 1rem;
+      line-height: 1.7;
+    }
+    .status {
+      min-height: 1.5em;
+      margin: 0 0 22px;
+      color: #e9d5ff;
+      font-size: .9rem;
+      line-height: 1.5;
+    }
+    .continue {
+      display: flex;
+      min-height: 52px;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      padding: 13px 20px;
+      border: 1px solid rgba(245, 208, 254, .38);
+      border-radius: 16px;
+      background: linear-gradient(100deg, #9333ea, #c026d3);
+      box-shadow: 0 8px 24px rgba(147, 51, 234, .25);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 700;
+      text-decoration: none;
+      transition: transform .18s ease, box-shadow .18s ease, filter .18s ease;
+    }
+    .continue:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 30px rgba(147, 51, 234, .36);
+      filter: brightness(1.08);
+    }
+    .continue:focus-visible {
+      outline: 3px solid #f0abfc;
+      outline-offset: 4px;
+    }
+    .footnote {
+      margin: 22px 0 0;
+      color: #9c8bab;
+      font-size: .78rem;
+      line-height: 1.55;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
 <body>
   <main>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">✦</span> Littlables <span aria-hidden="true">·</span> Lil</div>
     <h1>Sign in to Littlables</h1>
-    <p id="status">Open Lil while signed in to your Littlables admin account to continue to Open WebUI.</p>
-    <a href="https://littlables.com/lil">Go to Lil</a>
+    <p class="description">Your little corner for curious questions and big discoveries.</p>
+    <p class="status" id="status" role="status" aria-live="polite">Open Lil while signed in to your Littlables admin account to continue to Open WebUI.</p>
+    <a class="continue" href="https://littlables.com/lil">Go to Lil <span aria-hidden="true">→</span></a>
+    <p class="footnote">Open WebUI is available to Littlables administrators.</p>
   </main>
   <script>
     const parentOrigin = ${JSON.stringify(ALLOWED_PARENT_ORIGINS)};
