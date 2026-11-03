@@ -36,6 +36,20 @@ async function adminCookie(login = 'littlables') {
   return createAdminSessionCookie(login, authEnv.GITHUB_SESSION_SECRET);
 }
 
+test('POST /api/lil/search is registered and requires admin authentication', async () => {
+  const response = await worker.fetch(new Request('https://worker.example/api/lil/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: 'hello' })
+  }), {
+    SUPABASE_URL: 'https://supabase.example',
+    SUPABASE_SECRET_KEY: 'test-secret'
+  }, {});
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error, 'Supabase sign-in is required');
+});
+
 test('admin page offers GitHub sign-in when there is no valid session', async () => {
   const response = await worker.fetch(new Request('https://worker.example/admin'), {}, {});
   assert.equal(response.status, 200);
