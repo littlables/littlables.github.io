@@ -36,28 +36,27 @@ async function adminCookie(login = 'littlables') {
   return createAdminSessionCookie(login, authEnv.GITHUB_SESSION_SECRET);
 }
 
-test('GET /api/lil/status reports only whether Lil is online', async () => {
+test('GET /api/lil/status reports only whether Lil is online without proxy credentials', async () => {
   const originalFetch = globalThis.fetch;
   let upstreamRequest;
   globalThis.fetch = async (input, options = {}) => {
     upstreamRequest = { url: new URL(String(input)), headers: new Headers(options.headers) };
-    return Response.json({ online: true, model: 'private-model-name' });
+    return Response.json({ online: true, model: 'private-model-name' }, {
+      headers: { 'Cache-Control': 'no-store' }
+    });
   };
 
   try {
     const response = await worker.fetch(new Request('https://worker.example/api/lil/status'), {
-      LIL_API_ORIGIN: 'https://lil-api.example',
-      LIL_OPENWEBUI_PROXY_SECRET: 'test-proxy-secret-with-at-least-32-chars'
+      LIL_API_ORIGIN: 'https://lil-api.example'
     }, {});
 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { online: true });
     assert.equal(upstreamRequest.url.href, 'https://lil-api.example/api/lil/status');
-    assert.equal(
-      upstreamRequest.headers.get('X-Lil-OpenWebUI-Proxy-Secret'),
-      'test-proxy-secret-with-at-least-32-chars'
-    );
+    assert.equal(upstreamRequest.headers.has('X-Lil-OpenWebUI-Proxy-Secret'), false);
     assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -69,8 +68,7 @@ test('GET /api/lil/status fails closed when the laptop cannot be reached', async
 
   try {
     const response = await worker.fetch(new Request('https://worker.example/api/lil/status'), {
-      LIL_API_ORIGIN: 'https://lil-api.example',
-      LIL_OPENWEBUI_PROXY_SECRET: 'test-proxy-secret-with-at-least-32-chars'
+      LIL_API_ORIGIN: 'https://lil-api.example'
     }, {});
 
     assert.equal(response.status, 200);
