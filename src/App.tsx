@@ -771,7 +771,7 @@ export const App: React.FC = () => {
           isLilActive={lilRoute}
         />
 
-        {!lilRoute && <WorksheetsPanel />}
+        <WorksheetsPanel />
 
         {/* Category nav is hidden on standalone lil/about/taste-reader/profile/playroom/space pages — those show their own views, not the main feed. */}
         {!aboutRoute && !lilRoute && !tasteReaderRoute && !profileRoute && !playroomOrSpaceRoute && !spaceRoute && !playroomSpaceRoute && (
