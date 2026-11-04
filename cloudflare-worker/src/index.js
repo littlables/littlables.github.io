@@ -88,6 +88,7 @@ import { startSyncRun, updateSyncRun, finishSyncRun, isSyncRunHeartbeatDue, summ
 import { stageHalloweenBatch } from './halloween-batch.mjs';
 import { matchAdsToStory, rankAdsByEmbeddingSimilarity } from './ad-keyword-matcher.mjs';
 import { createAiUsageCounter, AI_USAGE_MODEL_LLAMA, AI_USAGE_MODEL_FLUX, AI_USAGE_MODEL_SDXL, AI_USAGE_MODEL_BGE } from './ai-usage-log.mjs';
+import { recordLilUsage, extractLilTokenUsage, LIL_WORKERS_AI_MODEL } from './lil-usage-log.mjs';
 import { handleOpenWebUIGateway } from './openwebui-gateway.mjs';
 
 const MAX_REQUEST_BYTES = 64_000;
@@ -116,8 +117,10 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+// Step 1 (public-Lil release): Lil no longer depends on the admin's laptop.
+// It is "online" exactly when Workers AI is bound to this Worker — no
+// tunnel, no upstream fetch, and no credentials are proxied here.
 async function getLilOnlineStatus(env) {
-  const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
   const statusResponse = (online) => new Response(JSON.stringify({ online }), {
     headers: {
       ...corsHeaders,
@@ -125,23 +128,7 @@ async function getLilOnlineStatus(env) {
       'Content-Type': 'application/json; charset=utf-8'
     }
   });
-  if (!configuredOrigin) return statusResponse(false);
-
-  try {
-    const apiOrigin = new URL(configuredOrigin);
-    if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
-      return statusResponse(false);
-    }
-
-    const response = await fetch(`${apiOrigin.origin}/api/lil/status`, {
-      signal: AbortSignal.timeout(5000)
-    });
-    if (!response.ok) return statusResponse(false);
-    const status = await response.json();
-    return statusResponse(status?.online === true);
-  } catch {
-    return statusResponse(false);
-  }
+  return statusResponse(Boolean(env?.AI));
 }
 
 async function handleEngagementEvent(request, env) {
@@ -3356,8 +3343,12 @@ export default {
         return jsonResponse({ items: [], count: 0, error: err.message }, 500);
       }
     }
-    // Lil runs on the admin's laptop. The Worker verifies site admin access
-    // first, then forwards only this request to the private tunnel origin.
+    // Step 1 (public-Lil release): Lil runs on Cloudflare Workers AI, still
+    // admin-gated. The laptop tunnel is no longer used for search, chat,
+    // models, or status. The Open WebUI gateway for lil.littlables.com
+    // (the Admin tab iframe) is a separate route and is untouched.
+    // The model list is pinned to the single Workers AI model so the
+    // frontend picker cannot select a laptop/Open WebUI model.
     if (request.method === 'GET' && pathname === '/api/lil/models') {
       try {
         if (env.SUMMARY_RATE_LIMITER) {
@@ -3370,31 +3361,15 @@ export default {
         const auth = await verifyTasteReaderAdmin(env, request);
         if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
 
-        const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
-        if (!configuredOrigin) return jsonResponse({ error: 'Lil laptop connection is not configured.' }, 503);
-
-        let apiOrigin;
-        try {
-          apiOrigin = new URL(configuredOrigin);
-        } catch {
-          return jsonResponse({ error: 'Lil laptop connection has an invalid URL.' }, 503);
-        }
-        if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
-          return jsonResponse({ error: 'Lil laptop connection must be an HTTPS origin.' }, 503);
-        }
-
-        const upstream = await fetch(`${apiOrigin.origin}/api/lil/models`, {
-          headers: { Authorization: request.headers.get('Authorization') || '' },
-          signal: AbortSignal.timeout(15_000)
-        });
-        const result = await upstream.json().catch(() => ({ error: 'Lil laptop returned an invalid response.' }));
-        return new Response(JSON.stringify(result), {
-          status: upstream.status,
+        return new Response(JSON.stringify({
+          models: [{ id: LIL_WORKERS_AI_MODEL, name: 'Llama 3.2 3B' }],
+          defaultModel: LIL_WORKERS_AI_MODEL
+        }), {
           headers: { ...corsHeaders, 'Cache-Control': 'no-store', 'Content-Type': 'application/json; charset=utf-8' }
         });
       } catch (err) {
         console.error('Lil model list request failed:', err);
-        return jsonResponse({ error: 'Could not load models from Open WebUI.' }, 502);
+        return jsonResponse({ error: 'Could not load Lil models.' }, 502);
       }
     }
     if (request.method === 'POST' && (pathname === '/api/lil/search' || pathname === '/api/lil/chat')) {
@@ -3413,13 +3388,18 @@ export default {
         if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
 
         const payload = await request.json().catch(() => null);
-        let forwardedRequest;
+        // Validation is unchanged from the laptop-forwarding version: the
+        // same size, history, and message-shape limits apply. Only the
+        // upstream changes — from the laptop tunnel to Workers AI.
+        let messages;
+        let query = '';
+        let mode = 'search';
         if (isChatRequest && Array.isArray(payload?.messages)) {
           if (payload.messages.length < 1 || payload.messages.length > 12) {
             return jsonResponse({ error: 'Chat history must contain between 1 and 12 messages.' }, 400);
           }
           let totalLength = 0;
-          const messages = [];
+          messages = [];
           for (const message of payload.messages) {
             if (!message || !['user', 'assistant'].includes(message.role) ||
                 typeof message.content !== 'string' || !message.content.trim() ||
@@ -3433,54 +3413,80 @@ export default {
           if (totalLength > 12_000 || messages[messages.length - 1].role !== 'user') {
             return jsonResponse({ error: 'Chat history is too long or does not end with a user message.' }, 400);
           }
-          forwardedRequest = {
-            messages,
-            mode: payload.mode === 'code' ? 'code' : 'chat'
-          };
+          // 'games' is accepted as a mode so the later usage-view step can
+          // count trivia generation separately; the frontend still sends
+          // 'chat' for games in Step 1, so those calls count as chat.
+          mode = payload.mode === 'code' ? 'code' : payload.mode === 'games' ? 'games' : 'chat';
         } else {
-          const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
+          query = typeof payload?.query === 'string' ? payload.query.trim() : '';
           if (!query) return jsonResponse({ error: 'Please provide a search question or topic.' }, 400);
           if (query.length > 500) return jsonResponse({ error: 'Lil questions must be 500 characters or fewer.' }, 400);
-          forwardedRequest = { query };
         }
         if (payload.model !== undefined) {
           if (typeof payload.model !== 'string' || !payload.model.trim() || payload.model.trim().length > 200) {
             return jsonResponse({ error: 'The selected model is invalid.' }, 400);
           }
-          forwardedRequest.model = payload.model.trim();
+          // Step 1 pins the model: a client-supplied model name is validated
+          // for shape but never used, so no request can reach the laptop.
         }
-        if (typeof payload.sessionId === 'string' && payload.sessionId.trim()) {
-          forwardedRequest.sessionId = payload.sessionId.trim().slice(0, 200);
-        }
-        if (isChatRequest) forwardedRequest.source = `web-lil-${forwardedRequest.mode || 'chat'}`;
+        // sessionId is accepted but ignored in Step 1: there is no memory
+        // yet, and no request leaves the Worker for a laptop session.
 
-        const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
-        if (!configuredOrigin) return jsonResponse({ error: 'Lil laptop connection is not configured.' }, 503);
+        if (!env.AI) return jsonResponse({ error: 'Workers AI is not configured for this Worker' }, 503);
+        const usageType = isChatRequest ? mode : 'search';
+        const systemPrompt =
+          mode === 'code'
+            ? 'You are Lil, a friendly coding helper at littlables. Help curious kids and families with beginner-friendly, age-appropriate code projects. When asked for a page, reply with a complete, self-contained HTML document. Never include external scripts, network requests, or links to external resources, and avoid frightening or inappropriate detail.'
+            : mode === 'search'
+              ? 'You are Lil, the friendly discovery guide at littlables. Give curious kids and families clear, accurate, age-appropriate answers. Use short headings and bullets when useful, explain unfamiliar ideas simply, and avoid frightening or inappropriate detail. You do not have live web access, so be clear when a question depends on recent news or changing facts; never invent current events or sources.'
+              : 'You are Lil, the friendly discovery guide at littlables. Give curious kids and families clear, accurate, age-appropriate answers. Explain unfamiliar ideas simply, keep answers concise and encouraging, and avoid frightening or inappropriate detail. You do not have live web access, so be clear when a question depends on recent news or changing facts; never invent current events or sources.';
+        const aiMessages = isChatRequest
+          ? [{ role: 'system', content: systemPrompt }, ...messages]
+          : [{ role: 'system', content: systemPrompt }, { role: 'user', content: query }];
+        const promptText = aiMessages.map((m) => m.content).join('\n');
 
-        let apiOrigin;
+        let aiRes;
         try {
-          apiOrigin = new URL(configuredOrigin);
-        } catch {
-          return jsonResponse({ error: 'Lil laptop connection has an invalid URL.' }, 503);
+          aiRes = await env.AI.run(LIL_WORKERS_AI_MODEL, {
+            messages: aiMessages,
+            max_tokens: 1024,
+            temperature: mode === 'code' ? 0.4 : 0.6
+          });
+        } catch (err) {
+          await recordLilUsage(env, { userId: auth.userId, usageType, calls: 0, errors: 1 });
+          console.error('Lil Workers AI request failed:', err);
+          return jsonResponse({ error: 'Lil could not generate a reply. Please try again.' }, 502);
         }
-        if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
-          return jsonResponse({ error: 'Lil laptop connection must be an HTTPS origin.' }, 503);
+        const answer = extractAiText(aiRes).trim();
+        if (!answer) {
+          await recordLilUsage(env, { userId: auth.userId, usageType, calls: 0, errors: 1 });
+          return jsonResponse({ error: 'Lil returned an empty reply.' }, 502);
         }
-
-        const upstream = await fetch(`${apiOrigin.origin}/api/lil/${isChatRequest ? 'chat' : 'search'}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: request.headers.get('Authorization') || ''
-          },
-          body: JSON.stringify(forwardedRequest),
-          signal: AbortSignal.timeout(125_000)
+        const tokens = extractLilTokenUsage(aiRes, promptText, answer);
+        // Logging never blocks the answer: recordLilUsage never throws,
+        // and a failed log just leaves a gap in the counts.
+        await recordLilUsage(env, {
+          userId: auth.userId,
+          usageType,
+          promptTokens: tokens.promptTokens,
+          completionTokens: tokens.completionTokens,
+          calls: 1,
+          errors: 0
         });
-        const result = await upstream.json().catch(() => ({ error: 'Lil laptop returned an invalid response.' }));
-        return jsonResponse(result, upstream.status);
+        if (isChatRequest) {
+          return jsonResponse({ reply: answer, answer, provider: 'workers-ai', model: LIL_WORKERS_AI_MODEL });
+        }
+        return jsonResponse({
+          answer,
+          searchQueries: [],
+          sources: [],
+          provider: 'workers-ai',
+          model: LIL_WORKERS_AI_MODEL,
+          apiKeyNotice: 'Lil runs on Cloudflare Workers AI. Answers are generated from the model and are not checked against live web sources.'
+        });
       } catch (err) {
-        console.error('Lil laptop request failed:', err);
-        return jsonResponse({ error: 'Could not reach Lil on the Ollama laptop. Check that the laptop and tunnel are online.' }, 502);
+        console.error('Lil Workers AI request failed:', err);
+        return jsonResponse({ error: 'Lil could not generate a reply. Please try again.' }, 502);
       }
     }
     // Taste Reader step 2: manual selection run for the gated site page.

@@ -36,46 +36,22 @@ async function adminCookie(login = 'littlables') {
   return createAdminSessionCookie(login, authEnv.GITHUB_SESSION_SECRET);
 }
 
-test('GET /api/lil/status reports only whether Lil is online without proxy credentials', async () => {
-  const originalFetch = globalThis.fetch;
-  let upstreamRequest;
-  globalThis.fetch = async (input, options = {}) => {
-    upstreamRequest = { url: new URL(String(input)), headers: new Headers(options.headers) };
-    return Response.json({ online: true, model: 'private-model-name' }, {
-      headers: { 'Cache-Control': 'no-store' }
-    });
-  };
+test('GET /api/lil/status reports online when Workers AI is bound, with no upstream fetch', async () => {
+  const response = await worker.fetch(new Request('https://worker.example/api/lil/status'), {
+    AI: {}
+  }, {});
 
-  try {
-    const response = await worker.fetch(new Request('https://worker.example/api/lil/status'), {
-      LIL_API_ORIGIN: 'https://lil-api.example'
-    }, {});
-
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { online: true });
-    assert.equal(upstreamRequest.url.href, 'https://lil-api.example/api/lil/status');
-    assert.equal(upstreamRequest.headers.has('X-Lil-OpenWebUI-Proxy-Secret'), false);
-    assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
-    assert.equal(response.headers.get('Cache-Control'), 'no-store');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { online: true });
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
 });
 
-test('GET /api/lil/status fails closed when the laptop cannot be reached', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response('offline', { status: 503 });
+test('GET /api/lil/status reports offline when Workers AI is not bound', async () => {
+  const response = await worker.fetch(new Request('https://worker.example/api/lil/status'), {}, {});
 
-  try {
-    const response = await worker.fetch(new Request('https://worker.example/api/lil/status'), {
-      LIL_API_ORIGIN: 'https://lil-api.example'
-    }, {});
-
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { online: false });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { online: false });
 });
 
 test('POST /api/lil/search is registered and requires admin authentication', async () => {
@@ -92,9 +68,11 @@ test('POST /api/lil/search is registered and requires admin authentication', asy
   assert.equal((await response.json()).error, 'Supabase sign-in is required');
 });
 
-test('POST /api/lil/search forwards the browser session ID after admin authentication', async () => {
+test('POST /api/lil/search answers via Workers AI and logs per-user usage after admin authentication', async () => {
   const originalFetch = globalThis.fetch;
-  let forwarded;
+  let aiModel;
+  let aiOptions;
+  let rpcBody;
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(String(input));
     if (url.pathname === '/auth/v1/user') {
@@ -103,9 +81,9 @@ test('POST /api/lil/search forwards the browser session ID after admin authentic
     if (url.pathname === '/rest/v1/profiles') {
       return Response.json([{ is_admin: true }]);
     }
-    if (url.pathname === '/api/lil/search') {
-      forwarded = JSON.parse(options.body);
-      return Response.json({ reply: 'Hello from Lil.' });
+    if (url.pathname === '/rest/v1/rpc/increment_lil_usage') {
+      rpcBody = JSON.parse(options.body);
+      return new Response(null, { status: 200 });
     }
     throw new Error(`Unexpected fetch: ${url.href}`);
   };
@@ -115,27 +93,89 @@ test('POST /api/lil/search forwards the browser session ID after admin authentic
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: 'Bearer site-access-token'
+        Authorization: 'Bearer test-token'
       },
       body: JSON.stringify({ query: 'hello', sessionId: 'browser-session-123', model: 'configured-model' })
     }), {
       SUPABASE_URL: 'https://supabase.example',
       SUPABASE_SECRET_KEY: 'service-secret',
-      LIL_API_ORIGIN: 'https://lil-api.example',
-      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      AI: {
+        run: async (model, options) => {
+          aiModel = model;
+          aiOptions = options;
+          return {
+            choices: [{ message: { content: 'Hello from Lil.' } }],
+            usage: { prompt_tokens: 42, completion_tokens: 7 }
+          };
+        }
+      }
     }, {});
 
     assert.equal(response.status, 200);
-    assert.deepEqual(forwarded, { query: 'hello', sessionId: 'browser-session-123', model: 'configured-model' });
+    const body = await response.json();
+    assert.equal(body.answer, 'Hello from Lil.');
+    assert.equal(body.provider, 'workers-ai');
+    assert.equal(body.model, '@cf/meta/llama-3.2-3b-instruct');
+    assert.deepEqual(body.searchQueries, []);
+    assert.deepEqual(body.sources, []);
+    assert.match(body.apiKeyNotice, /not checked against live web sources/);
+    // The client-supplied model and session ID are ignored: the model is
+    // pinned and there is no laptop session in Step 1.
+    assert.equal(aiModel, '@cf/meta/llama-3.2-3b-instruct');
+    assert.equal(aiOptions.temperature, 0.6);
+    assert.equal(aiOptions.messages[0].role, 'system');
+    assert.match(aiOptions.messages[0].content, /do not have live web access/);
+    assert.deepEqual(aiOptions.messages[1], { role: 'user', content: 'hello' });
+    assert.equal(rpcBody.p_user_id, 'admin-user');
+    assert.equal(rpcBody.p_usage_type, 'search');
+    assert.equal(rpcBody.p_prompt_tokens, 42);
+    assert.equal(rpcBody.p_completion_tokens, 7);
+    assert.equal(rpcBody.p_calls, 1);
+    assert.equal(rpcBody.p_errors, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('POST /api/lil/chat forwards bounded code requests after admin authentication', async () => {
+test('POST /api/lil/search returns 503 when Workers AI is not bound', async () => {
   const originalFetch = globalThis.fetch;
-  let forwarded;
-  let forwardedPath;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer test-token'
+      },
+      body: JSON.stringify({ query: 'hello' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).error, 'Workers AI is not configured for this Worker');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('POST /api/lil/chat answers bounded code requests via Workers AI after admin authentication', async () => {
+  const originalFetch = globalThis.fetch;
+  let aiOptions;
+  let rpcBody;
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(String(input));
     if (url.pathname === '/auth/v1/user') {
@@ -144,10 +184,9 @@ test('POST /api/lil/chat forwards bounded code requests after admin authenticati
     if (url.pathname === '/rest/v1/profiles') {
       return Response.json([{ is_admin: true }]);
     }
-    if (url.pathname === '/api/lil/chat') {
-      forwardedPath = url.pathname;
-      forwarded = JSON.parse(options.body);
-      return Response.json({ reply: 'Hello again.' });
+    if (url.pathname === '/rest/v1/rpc/increment_lil_usage') {
+      rpcBody = JSON.parse(options.body);
+      return new Response(null, { status: 200 });
     }
     throw new Error(`Unexpected fetch: ${url.href}`);
   };
@@ -162,25 +201,39 @@ test('POST /api/lil/chat forwards bounded code requests after admin authenticati
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: 'Bearer test-admin-token'
+        Authorization: 'Bearer test-token'
       },
       body: JSON.stringify({ messages, sessionId: 'chat-session-123', mode: 'code', model: 'code-model' })
     }), {
       SUPABASE_URL: 'https://supabase.example',
       SUPABASE_SECRET_KEY: 'service-secret',
-      LIL_API_ORIGIN: 'https://lil-api.example',
-      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      AI: {
+        run: async (model, options) => {
+          aiOptions = options;
+          // Plain { response } shape, with no usage object, so the token
+          // counts must fall back to the character-based estimate.
+          return { response: 'Hello again.' };
+        }
+      }
     }, {});
 
     assert.equal(response.status, 200);
-    assert.equal(forwardedPath, '/api/lil/chat');
-    assert.deepEqual(forwarded, {
-      messages,
-      mode: 'code',
-      model: 'code-model',
-      sessionId: 'chat-session-123',
-      source: 'web-lil-code'
-    });
+    const body = await response.json();
+    assert.equal(body.reply, 'Hello again.');
+    assert.equal(body.provider, 'workers-ai');
+    assert.equal(body.model, '@cf/meta/llama-3.2-3b-instruct');
+    assert.equal(aiOptions.temperature, 0.4);
+    assert.equal(aiOptions.messages[0].role, 'system');
+    assert.match(aiOptions.messages[0].content, /self-contained HTML/);
+    assert.deepEqual(aiOptions.messages.slice(1), messages);
+    const promptText = aiOptions.messages.map((m) => m.content).join('\n');
+    assert.equal(rpcBody.p_user_id, 'admin-user');
+    assert.equal(rpcBody.p_usage_type, 'code');
+    assert.equal(rpcBody.p_prompt_tokens, Math.ceil(promptText.length / 4));
+    assert.equal(rpcBody.p_completion_tokens, Math.ceil('Hello again.'.length / 4));
+    assert.equal(rpcBody.p_calls, 1);
+    assert.equal(rpcBody.p_errors, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -196,10 +249,9 @@ test('GET /api/lil/models requires admin authentication', async () => {
   assert.equal((await response.json()).error, 'Supabase sign-in is required');
 });
 
-test('GET /api/lil/models returns configured Open WebUI models for admins', async () => {
+test('GET /api/lil/models returns the pinned Workers AI model for admins', async () => {
   const originalFetch = globalThis.fetch;
-  let forwardedAuthorization;
-  globalThis.fetch = async (input, options = {}) => {
+  globalThis.fetch = async (input) => {
     const url = new URL(String(input));
     if (url.pathname === '/auth/v1/user') {
       return Response.json({ id: 'admin-user', email: 'admin@example.com' });
@@ -207,32 +259,24 @@ test('GET /api/lil/models returns configured Open WebUI models for admins', asyn
     if (url.pathname === '/rest/v1/profiles') {
       return Response.json([{ is_admin: true }]);
     }
-    if (url.pathname === '/api/lil/models') {
-      forwardedAuthorization = new Headers(options.headers).get('Authorization');
-      return Response.json({
-        models: [{ id: 'model-a', name: 'Model A' }],
-        defaultModel: 'model-a'
-      });
-    }
     throw new Error(`Unexpected fetch: ${url.href}`);
   };
 
   try {
     const response = await worker.fetch(new Request('https://worker.example/api/lil/models', {
-      headers: { Authorization: 'Bearer site-access-token' }
+      headers: { Authorization: 'Bearer test-token' }
     }), {
       SUPABASE_URL: 'https://supabase.example',
       SUPABASE_SECRET_KEY: 'service-secret',
-      LIL_API_ORIGIN: 'https://lil-api.example',
-      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      AI: {}
     }, {});
 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
-      models: [{ id: 'model-a', name: 'Model A' }],
-      defaultModel: 'model-a'
+      models: [{ id: '@cf/meta/llama-3.2-3b-instruct', name: 'Llama 3.2 3B' }],
+      defaultModel: '@cf/meta/llama-3.2-3b-instruct'
     });
-    assert.equal(forwardedAuthorization, 'Bearer site-access-token');
     assert.equal(response.headers.get('Cache-Control'), 'no-store');
   } finally {
     globalThis.fetch = originalFetch;

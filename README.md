@@ -135,6 +135,14 @@ All AI model calls go through Cloudflare Workers AI (`env.AI.run`). The site mak
 - **Trigger:** Visitor feed loads — the frontend sends untagged stories from the current feed and gets ranked ad IDs back
 - **What it does:** Embeds up to 20 untagged stories per feed load, queries the ad keyword tags, and returns ranked ad matches per story. This is the only embedding use triggered by visitors rather than the admin panel (besides #9).
 
+### 10. Lil search, chat, and code (public-Lil release, Step 1)
+- **Model:** `@cf/meta/llama-3.2-3b-instruct` (pinned — a client-supplied model name is validated for shape but never used)
+- **Location:** `cloudflare-worker/src/index.js` → `POST /api/lil/search`, `POST /api/lil/chat`, `GET /api/lil/models`, `GET /api/lil/status`
+- **Trigger:** On-demand from the `/lil` page, still admin-gated via `verifyTasteReaderAdmin` in Step 1 — members see no change. Step 1 retires the laptop-tunnel forwarding for these routes; the Open WebUI gateway for `lil.littlables.com` (the Admin tab iframe) is a separate route and is untouched.
+- **What it does:** Answers search questions, chat, and code requests with Workers AI instead of the laptop's Ollama. Search and chat keep the same request limits as before (search questions ≤ 500 chars, chat history 1–12 messages, ≤ 12,000 bytes total, last message from the user). Answers carry no live web access and no sources in Step 1 (`searchQueries: []`, `sources: []`), and the search reply says so.
+- **Config:** `max_tokens: 1024`, `temperature: 0.6` (search/chat/games), `0.4` (code)
+- **Per-user counting:** `supabase/lil_usage_daily.sql` + `cloudflare-worker/src/lil-usage-log.mjs` — one row per UTC day per user per type (`search`, `chat`, `code`, `games`) via the `increment_lil_usage` RPC, worker-only (service_role). Token counts are provider-reported when Workers AI returns a usage object, otherwise a character-based estimate; logging never blocks an answer. Counts start the day the migration deploys — there is no backfill.
+
 ### 9. Playroom description fallback
 - **Model:** `@cf/baai/bge-base-en-v1.5` (768-dim text embeddings)
 - **Location:** `cloudflare-worker/src/news-storage.mjs` (playroom feed)
