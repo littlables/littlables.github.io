@@ -5167,8 +5167,8 @@ html[data-system-font="true"] .story-provider-badge {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 168px;
-  height: 96px;
+  width: 200px;
+  height: 114px;
   border: 1px solid rgba(216, 180, 254, 0.18);
   border-radius: 50%;
   pointer-events: none;
