@@ -964,7 +964,6 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
       <header className="lil-hero-header">
         <div className="lil-avatar-wrap">
           <img className="lil-avatar-img" src="/img/lil-avatar.svg" alt="Lil Mascot" />
-          <span className="lil-avatar-sparkle">🔍</span>
         </div>
         <h1 className="lil-hero-title">Meet Lil</h1>
         <p className="lil-hero-subtitle">
