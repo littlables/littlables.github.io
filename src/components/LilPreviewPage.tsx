@@ -6,25 +6,25 @@ interface LilPreviewPageProps {
 
 const FEATURES = [
   {
-    icon: '🔎',
+    icon: '🔭',
     title: 'Curious search',
     description: 'Ask a question and explore clear, kid-friendly answers with helpful sources.',
     className: 'search',
   },
   {
-    icon: '💬',
+    icon: '💌',
     title: 'Chat with Lil',
     description: 'Keep the conversation going with a friendly AI companion made for discovery.',
     className: 'chat',
   },
   {
-    icon: '💻',
+    icon: '🧩',
     title: 'Create with code',
     description: 'Turn ideas into little programs, creative projects, and playful experiments.',
     className: 'code',
   },
   {
-    icon: '🎮',
+    icon: '🎲',
     title: 'Learn through games',
     description: 'Play, solve puzzles, and discover something new one level at a time.',
     className: 'games',
