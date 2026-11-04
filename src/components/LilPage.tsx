@@ -974,12 +974,12 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
 
       <div className="lil-view-toggle" role="group" aria-label="Choose Lil view">
         {([
-          ['search', 'Search'],
-          ['chat', 'Chat'],
-          ['code', 'Code'],
-          ['games', 'Games'],
-          ['admin', 'Admin'],
-        ] as const).map(([view, label]) => (
+          ['search', 'Search', '🔭'],
+          ['chat', 'Chat', '💌'],
+          ['code', 'Code', '🧩'],
+          ['games', 'Games', '🎲'],
+          ['admin', 'Admin', '⚙️'],
+        ] as const).map(([view, label, emoji]) => (
           <button
             key={view}
             type="button"
@@ -987,7 +987,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
             aria-pressed={activeView === view}
             onClick={() => setActiveView(view)}
           >
-            {label}
+            <span aria-hidden="true">{emoji}</span> {label}
           </button>
         ))}
       </div>

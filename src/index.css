@@ -5422,6 +5422,10 @@ html[data-system-font="true"] .story-provider-badge {
 .lil-view-toggle-button {
   border: 0;
   border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
   padding: 0.55rem 1rem;
   color: var(--news-text-muted, #c084fc);
   background: transparent;
@@ -6314,8 +6318,8 @@ html[data-system-font="true"] .story-provider-badge {
 
 .lil-avatar-wrap {
   position: relative;
-  width: 64px;
-  height: 64px;
+  width: 96px;
+  height: 96px;
   border-radius: 50%;
   background: linear-gradient(135deg, rgba(192, 132, 252, 0.25) 0%, rgba(236, 72, 153, 0.25) 100%);
   border: 2px solid var(--news-accent, #c084fc);
