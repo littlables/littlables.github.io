@@ -367,7 +367,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
           typeof (model as { id?: unknown }).id === 'string' &&
           typeof (model as { name?: unknown }).name === 'string')
         : [];
-      if (models.length === 0) throw new Error('Open WebUI did not return any available models.');
+      if (models.length === 0) throw new Error('Lil did not return any available models.');
 
       setLilModels(models);
       setSelectedModels((current) => {
@@ -387,7 +387,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
         return next;
       });
     } catch (error) {
-      setModelsError(error instanceof Error ? error.message : 'Could not load Open WebUI models.');
+      setModelsError(error instanceof Error ? error.message : 'Could not load Lil models.');
     } finally {
       setModelsLoading(false);
     }
@@ -1529,7 +1529,9 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
                   ? 'Open WebUI'
                   : currentResult.provider === 'ollama'
                     ? 'Local Ollama'
-                    : currentResult.provider || 'Ollama'}
+                    : currentResult.provider === 'workers-ai'
+                      ? 'Workers AI'
+                      : currentResult.provider || 'Ollama'}
               </span>
               <span className="lil-result-model-badge">{currentResult.model || 'llama3.2:3b'}</span>
             </div>
