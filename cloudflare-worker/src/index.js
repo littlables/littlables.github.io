@@ -89,6 +89,9 @@ import { stageHalloweenBatch } from './halloween-batch.mjs';
 import { matchAdsToStory, rankAdsByEmbeddingSimilarity } from './ad-keyword-matcher.mjs';
 import { createAiUsageCounter, AI_USAGE_MODEL_LLAMA, AI_USAGE_MODEL_FLUX, AI_USAGE_MODEL_SDXL, AI_USAGE_MODEL_BGE } from './ai-usage-log.mjs';
 import { recordLilUsage, extractLilTokenUsage, LIL_WORKERS_AI_MODEL } from './lil-usage-log.mjs';
+import { getLilMemoryBlock, LIL_MEMORY_KINDS } from './lil-memory-recall.mjs';
+import { validateTranscriptRow, dedupeTranscriptRows } from './lil-transcripts.mjs';
+import { runGlobalDistill, GLOBAL_DISTILL_CRON } from './lil-global-distill.mjs';
 import { handleOpenWebUIGateway } from './openwebui-gateway.mjs';
 
 const MAX_REQUEST_BYTES = 64_000;
@@ -3372,6 +3375,177 @@ export default {
         return jsonResponse({ error: 'Could not load Lil models.' }, 502);
       }
     }
+    // Step 1.5 memory endpoints (admin-only). By default these manage
+    // the admin's own memories: every query is scoped to auth.userId,
+    // so an admin can never list, add, or delete another user's
+    // memories through these routes. The one exception is global
+    // personality rows (user_id NULL): GET with ?scope=global lists
+    // them (including distillation drafts, for admin review), POST
+    // with { global: true } creates one (personality/style only), and
+    // DELETE removes one when no own row matches the id.
+    if (pathname === '/api/lil/memories') {
+      try {
+        if (env.SUMMARY_RATE_LIMITER) {
+          const limit = await env.SUMMARY_RATE_LIMITER.limit({
+            key: `lil:${request.headers.get('CF-Connecting-IP') || 'unknown'}`
+          });
+          if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
+        }
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+
+        if (request.method === 'GET') {
+          const globalScope = url.searchParams.get('scope') === 'global';
+          const params = new URLSearchParams({
+            select: 'id,user_id,kind,content,source,source_key,created_at',
+            order: 'created_at.desc',
+            limit: '50'
+          });
+          if (globalScope) params.set('user_id', 'is.null');
+          else params.set('user_id', `eq.${auth.userId}`);
+          const response = await fetch(supabaseUrl(env, 'lil_memories', params), { headers: supabaseHeaders(env) });
+          if (!response.ok) return jsonResponse({ error: 'Could not load Lil memories.' }, 502);
+          const memories = await response.json().catch(() => null);
+          if (!Array.isArray(memories)) return jsonResponse({ error: 'Could not load Lil memories.' }, 502);
+          return jsonResponse({ memories });
+        }
+
+        if (request.method === 'POST') {
+          const contentLength = Number(request.headers.get('Content-Length') || 0);
+          if (contentLength > 8192) return jsonResponse({ error: 'Lil memory is too large.' }, 413);
+          const payload = await request.json().catch(() => null);
+          const kind = typeof payload?.kind === 'string' ? payload.kind.trim() : '';
+          const content = typeof payload?.content === 'string' ? payload.content.trim() : '';
+          const source = typeof payload?.source === 'string' && payload.source.trim() ? payload.source.trim().slice(0, 100) : 'manual';
+          const sourceKey = typeof payload?.source_key === 'string' && payload.source_key.trim() ? payload.source_key.trim().slice(0, 500) : null;
+          const globalRow = payload?.global === true;
+          if (!LIL_MEMORY_KINDS.has(kind)) return jsonResponse({ error: 'Memory kind must be personality, style, preference, fact, or episode.' }, 400);
+          if (globalRow && kind !== 'personality' && kind !== 'style') {
+            return jsonResponse({ error: 'Global personality rows must be personality or style.' }, 400);
+          }
+          if (!content || content.length > 2000) return jsonResponse({ error: 'Memory content must be between 1 and 2000 characters.' }, 400);
+          const response = await fetch(supabaseUrl(env, 'lil_memories'), {
+            method: 'POST',
+            headers: supabaseHeaders(env, { Prefer: 'return=representation' }),
+            body: JSON.stringify({ user_id: globalRow ? null : auth.userId, kind, content, source, source_key: sourceKey })
+          });
+          if (!response.ok) return jsonResponse({ error: 'Could not save Lil memory.' }, 502);
+          const rows = await response.json().catch(() => null);
+          if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'Could not save Lil memory.' }, 502);
+          return jsonResponse(rows[0], 201);
+        }
+
+        if (request.method === 'DELETE') {
+          const id = url.searchParams.get('id') || '';
+          if (!id) return jsonResponse({ error: 'A memory id is required.' }, 400);
+          const ownParams = new URLSearchParams({ id: `eq.${id}`, user_id: `eq.${auth.userId}` });
+          const ownResponse = await fetch(supabaseUrl(env, 'lil_memories', ownParams), {
+            method: 'DELETE',
+            headers: supabaseHeaders(env, { Prefer: 'return=representation' })
+          });
+          if (!ownResponse.ok) return jsonResponse({ error: 'Could not delete Lil memory.' }, 502);
+          const ownRows = await ownResponse.json().catch(() => null);
+          if (Array.isArray(ownRows) && ownRows.length > 0) return jsonResponse({ ok: true, id: ownRows[0].id });
+          // No own row matched: the id may be a global row, which only
+          // the admin may delete. A member could never reach this
+          // branch, because the whole endpoint is admin-gated above.
+          const globalParams = new URLSearchParams({ id: `eq.${id}`, user_id: 'is.null' });
+          const globalResponse = await fetch(supabaseUrl(env, 'lil_memories', globalParams), {
+            method: 'DELETE',
+            headers: supabaseHeaders(env, { Prefer: 'return=representation' })
+          });
+          if (!globalResponse.ok) return jsonResponse({ error: 'Could not delete Lil memory.' }, 502);
+          const globalRows = await globalResponse.json().catch(() => null);
+          if (!Array.isArray(globalRows) || globalRows.length === 0) return jsonResponse({ error: 'Memory not found.' }, 404);
+          return jsonResponse({ ok: true, id: globalRows[0].id });
+        }
+
+        return jsonResponse({ error: 'Method not allowed.' }, 405);
+      } catch (err) {
+        console.error('Lil memory request failed:', err);
+        return jsonResponse({ error: 'Could not complete the Lil memory request.' }, 502);
+      }
+    }
+    // Step 1.5 expanded scope, admin-only. Transcript import: the body
+    // is an array of laptop export rows, and every imported row is
+    // stored under the CALLING admin's user_id — a user_id in the body
+    // is ignored, so an import can never be aimed at another account.
+    // Rows whose (source, source_key) the admin already imported are
+    // skipped and reported, so re-running an import is safe.
+    if (request.method === 'POST' && pathname === '/api/lil/transcripts/import') {
+      try {
+        if (env.SUMMARY_RATE_LIMITER) {
+          const limit = await env.SUMMARY_RATE_LIMITER.limit({
+            key: `lil:${request.headers.get('CF-Connecting-IP') || 'unknown'}`
+          });
+          if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
+        }
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const contentLength = Number(request.headers.get('Content-Length') || 0);
+        if (contentLength > 524_288) return jsonResponse({ error: 'Transcript import is too large; send at most 200 rows per call.' }, 413);
+        const payload = await request.json().catch(() => null);
+        const incoming = Array.isArray(payload?.transcripts) ? payload.transcripts : null;
+        if (!incoming || incoming.length === 0 || incoming.length > 200) {
+          return jsonResponse({ error: 'Send 1 to 200 transcript rows per import call.' }, 400);
+        }
+        const validated = [];
+        let invalid = 0;
+        for (const row of incoming) {
+          const normalized = validateTranscriptRow(row);
+          if (normalized) validated.push(normalized);
+          else invalid += 1;
+        }
+        if (validated.length === 0) return jsonResponse({ error: 'No valid transcript rows to import.' }, 400);
+        const existingParams = new URLSearchParams({
+          select: 'source,source_key',
+          user_id: `eq.${auth.userId}`,
+          source_key: 'not.is.null',
+          limit: '10000'
+        });
+        const existingResponse = await fetch(supabaseUrl(env, 'lil_transcripts', existingParams), { headers: supabaseHeaders(env) });
+        if (!existingResponse.ok) return jsonResponse({ error: 'Could not check existing Lil transcripts.' }, 502);
+        const existingRows = await existingResponse.json().catch(() => null);
+        if (!Array.isArray(existingRows)) return jsonResponse({ error: 'Could not check existing Lil transcripts.' }, 502);
+        const existingKeys = new Set(existingRows.map((row) => `${row.source || ''}||${row.source_key}`));
+        const { newRows, skipped } = dedupeTranscriptRows(validated, existingKeys);
+        let imported = 0;
+        if (newRows.length > 0) {
+          const insertResponse = await fetch(supabaseUrl(env, 'lil_transcripts'), {
+            method: 'POST',
+            headers: supabaseHeaders(env, { Prefer: 'return=minimal' }),
+            body: JSON.stringify(newRows.map((row) => ({ ...row, user_id: auth.userId })))
+          });
+          if (!insertResponse.ok) return jsonResponse({ error: 'Could not import Lil transcripts.' }, 502);
+          imported = newRows.length;
+        }
+        return jsonResponse({ imported, skipped, invalid });
+      } catch (err) {
+        console.error('Lil transcript import failed:', err);
+        return jsonResponse({ error: 'Could not complete the Lil transcript import.' }, 502);
+      }
+    }
+    // Step 1.5 expanded scope, admin-only manual trigger for the global
+    // distillation job. The job writes DRAFT global rows only; drafts
+    // are never recalled until the admin approves them.
+    if (request.method === 'POST' && pathname === '/api/lil/distill-global') {
+      try {
+        if (env.SUMMARY_RATE_LIMITER) {
+          const limit = await env.SUMMARY_RATE_LIMITER.limit({
+            key: `lil:${request.headers.get('CF-Connecting-IP') || 'unknown'}`
+          });
+          if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
+        }
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const result = await runGlobalDistill(env);
+        if (!result.ok) return jsonResponse({ error: result.error || 'Global Lil distillation failed.' }, 502);
+        return jsonResponse(result);
+      } catch (err) {
+        console.error('Lil global distillation request failed:', err);
+        return jsonResponse({ error: 'Could not complete the Lil global distillation.' }, 502);
+      }
+    }
     if (request.method === 'POST' && (pathname === '/api/lil/search' || pathname === '/api/lil/chat')) {
       try {
         const isChatRequest = pathname === '/api/lil/chat';
@@ -3429,17 +3603,26 @@ export default {
           // Step 1 pins the model: a client-supplied model name is validated
           // for shape but never used, so no request can reach the laptop.
         }
-        // sessionId is accepted but ignored in Step 1: there is no memory
-        // yet, and no request leaves the Worker for a laptop session.
+        // sessionId is accepted but ignored: Step 1.5 recall is keyed by
+        // the signed-in user, not by a browser session, and no request
+        // leaves the Worker for a laptop session.
 
         if (!env.AI) return jsonResponse({ error: 'Workers AI is not configured for this Worker' }, 503);
         const usageType = isChatRequest ? mode : 'search';
-        const systemPrompt =
+        let systemPrompt =
           mode === 'code'
             ? 'You are Lil, a friendly coding helper at littlables. Help curious kids and families with beginner-friendly, age-appropriate code projects. When asked for a page, reply with a complete, self-contained HTML document. Never include external scripts, network requests, or links to external resources, and avoid frightening or inappropriate detail.'
             : mode === 'search'
               ? 'You are Lil, the friendly discovery guide at littlables. Give curious kids and families clear, accurate, age-appropriate answers. Use short headings and bullets when useful, explain unfamiliar ideas simply, and avoid frightening or inappropriate detail. You do not have live web access, so be clear when a question depends on recent news or changing facts; never invent current events or sources.'
               : 'You are Lil, the friendly discovery guide at littlables. Give curious kids and families clear, accurate, age-appropriate answers. Explain unfamiliar ideas simply, keep answers concise and encouraging, and avoid frightening or inappropriate detail. You do not have live web access, so be clear when a question depends on recent news or changing facts; never invent current events or sources.';
+        // Step 1.5 recall (admin-only): the recalled user is the admin
+        // herself. Recall never throws and never blocks the answer — on
+        // any failure Lil simply answers without memories. The block is
+        // appended to the system prompt, so it also counts toward the
+        // prompt tokens already logged by recordLilUsage.
+        const recallQuery = isChatRequest ? messages[messages.length - 1].content : query;
+        const memoryBlock = await getLilMemoryBlock(env, auth.userId, recallQuery);
+        if (memoryBlock) systemPrompt += `\n\n${memoryBlock}`;
         const aiMessages = isChatRequest
           ? [{ role: 'system', content: systemPrompt }, ...messages]
           : [{ role: 'system', content: systemPrompt }, { role: 'user', content: query }];
@@ -3980,6 +4163,19 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    // Weekly global Lil distillation runs on its own cron, independent
+    // of the provider sync toggle: it must not be skipped just because
+    // provider auto-sync is off. The cron '0 3 * * 0' (Sundays 03:00
+    // UTC) has to be added to the worker's triggers for this branch to
+    // fire; the manual POST /api/lil/distill-global endpoint works
+    // without it.
+    if (event?.cron === GLOBAL_DISTILL_CRON) {
+      const result = await runGlobalDistill(env);
+      console.info('Weekly Lil global distillation:', result.ok
+        ? `${result.draftsCreated} drafts from ${result.sampleMessages} assistant messages across ${result.sampleUsers} users`
+        : `failed: ${result.error}`);
+      return;
+    }
     if (env?.AUTO_SYNC_ENABLED === 'false') {
       console.info('Provider auto-sync skipped via AUTO_SYNC_ENABLED=false');
       return;
