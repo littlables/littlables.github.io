@@ -168,7 +168,7 @@ export const Header: React.FC<HeaderProps> = ({
             data-umami-event="Open-Lil-Page"
             onClick={onOpenLil}
           >
-            <span className="avatar-emoji-glyph" aria-hidden="true">✨</span>
+            <img className="header-lil-avatar" src="/img/lil-avatar.svg" alt="" aria-hidden="true" />
           </button>
         )}
 

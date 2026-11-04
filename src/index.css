@@ -5095,6 +5095,14 @@ html[data-system-font="true"] .story-provider-badge {
   font-size: 1.1rem;
 }
 
+.header-lil-avatar {
+  width: 100%;
+  height: 100%;
+  border-radius: 9999px;
+  object-fit: cover;
+  display: block;
+}
+
 .header-lil-button.is-active {
   background: var(--news-pill-active-bg, linear-gradient(135deg, #9333ea 0%, #d946ef 100%));
   color: #ffffff;
