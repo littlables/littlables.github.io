@@ -5151,8 +5151,8 @@ html[data-system-font="true"] .story-provider-badge {
 .lil-preview-avatar {
   position: relative;
   z-index: 1;
-  width: 160px;
-  height: 160px;
+  width: 112px;
+  height: 112px;
   margin-bottom: 0.8rem;
   filter: drop-shadow(0 10px 24px rgba(13, 5, 26, 0.38));
 }
