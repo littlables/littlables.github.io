@@ -12,6 +12,11 @@ import {
 } from '../services/urlService';
 import { trackStoryClick, trackStoryEngagementClick } from '../services/trackingService';
 import { t } from '../constants/translations';
+import { INTEREST_KEYWORDS } from '../constants/interestKeywords';
+
+const INTEREST_KEYWORD_MAP = new Map(
+  INTEREST_KEYWORDS.map((keyword) => [keyword.id, keyword])
+);
 
 interface StoryModalProps {
   story: NewsItem | null;
@@ -94,6 +99,9 @@ export const StoryModal: React.FC<StoryModalProps> = ({
   const effectiveCategory = story.category || category;
   const givenPubName = getStoryGivenPubName(story);
   const topLevelDomain = getStoryTopLevelDomain(story);
+  const interestTags = [...new Set(
+    (story.interestKeywords || []).map((keyword) => keyword.trim()).filter(Boolean)
+  )];
 
   const isVotedLove = hasUserReacted(storyId, 'love');
   const isVotedMind = hasUserReacted(storyId, 'mind');
@@ -209,6 +217,22 @@ export const StoryModal: React.FC<StoryModalProps> = ({
               <span className="story-meta-cell story-scoop-badge">{t('verifiedWire') || "🧸 Littlables' Little Scoop"}</span>
             )}
           </div>
+
+          {interestTags.length > 0 && (
+            <div className="story-modal-interests" aria-label="Story interests">
+              <span className="story-modal-interests-label">Interests</span>
+              <div className="story-modal-interest-tags">
+                {interestTags.map((tag) => {
+                  const keyword = INTEREST_KEYWORD_MAP.get(tag.toLowerCase());
+                  return (
+                    <span className="story-modal-interest-tag" key={tag}>
+                      {keyword ? `${keyword.icon} ${keyword.label}` : tag.replace(/[-_]+/g, ' ')}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <h2 id="story-modal-title" className="story-modal-title">
             {story.title}

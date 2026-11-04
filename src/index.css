@@ -2756,6 +2756,35 @@ body.story-modal-open {
   gap: 0.38rem 0.85rem;
 }
 
+.story-modal-interests {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.6rem;
+}
+
+.story-modal-interests-label {
+  color: var(--news-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.story-modal-interest-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.story-modal-interest-tag {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--news-card-border);
+  border-radius: 9999px;
+  background: var(--news-hover-bg, #334155);
+  color: var(--news-text, #f8fafc);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .story-modal-source {
   color: var(--news-text-muted);
 }

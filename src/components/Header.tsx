@@ -72,7 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
       : null;
 
   const handleBrandClick = () => {
-    if (isLoading) return;
+    if (isLoading && !isLilActive) return;
     trackHomeLogoRefresh();
     onHomeClick();
   };
