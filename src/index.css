@@ -556,7 +556,7 @@ body {
   border-radius: 16px;
   color: var(--news-text, #f8fafc);
   box-shadow: 0 20px 60px rgb(0 0 0 / 45%);
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
 }
 
 .worksheets-dropdown-scroll {
@@ -2754,6 +2754,35 @@ body.story-modal-open {
 
 .story-modal-meta {
   gap: 0.38rem 0.85rem;
+}
+
+.story-modal-interests {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.6rem;
+}
+
+.story-modal-interests-label {
+  color: var(--news-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.story-modal-interest-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.story-modal-interest-tag {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--news-card-border);
+  border-radius: 9999px;
+  background: var(--news-hover-bg, #334155);
+  color: var(--news-text, #f8fafc);
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .story-modal-source {
@@ -5078,6 +5107,228 @@ html[data-system-font="true"] .story-provider-badge {
   width: 100%;
 }
 
+.lil-preview-page {
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: clamp(1.25rem, 4vw, 3rem) 0 3rem;
+}
+
+.lil-preview-hero {
+  position: relative;
+  display: flex;
+  min-height: 340px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 2rem 1rem 2.5rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 30px;
+  background:
+    radial-gradient(ellipse at 50% 35%, rgba(147, 51, 234, 0.2), transparent 55%),
+    var(--news-card-bg, #1b0d33);
+  text-align: center;
+}
+
+.lil-preview-avatar {
+  position: relative;
+  z-index: 1;
+  width: 112px;
+  height: 112px;
+  margin-bottom: 0.8rem;
+  filter: drop-shadow(0 10px 24px rgba(13, 5, 26, 0.38));
+}
+
+.lil-preview-orbit {
+  position: absolute;
+  top: 63px;
+  left: 50%;
+  width: 210px;
+  height: 92px;
+  border: 1px solid rgba(216, 180, 254, 0.18);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.lil-preview-orbit-one {
+  transform: translateX(-50%) rotate(-18deg);
+}
+
+.lil-preview-orbit-two {
+  transform: translateX(-50%) rotate(18deg);
+}
+
+.lil-preview-eyebrow {
+  position: relative;
+  z-index: 1;
+  margin: 0 0 0.4rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.lil-preview-hero h1 {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font-family: 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: clamp(2.6rem, 8vw, 4rem);
+  line-height: 1;
+}
+
+.lil-preview-intro {
+  max-width: 540px;
+  margin: 0.8rem 0 1.15rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: clamp(0.95rem, 2.2vw, 1.1rem);
+  line-height: 1.65;
+}
+
+.lil-preview-coming-soon,
+.lil-preview-feature-soon {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(216, 180, 254, 0.3);
+  border-radius: 999px;
+  background: rgba(147, 51, 234, 0.16);
+  color: var(--news-text, #fbf7ff);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lil-preview-coming-soon {
+  padding: 0.45rem 0.9rem;
+}
+
+.lil-preview-features {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.lil-preview-feature {
+  display: flex;
+  min-height: 220px;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 1.25rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+  border-radius: 20px;
+  background: var(--news-card-bg, #1b0d33);
+  box-shadow: var(--news-card-shadow, 0 4px 18px rgba(13, 5, 26, 0.35));
+}
+
+.lil-preview-feature-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  margin-bottom: 1rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 15px;
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.14));
+  font-size: 1.5rem;
+}
+
+.lil-preview-feature h2,
+.lil-preview-admin h2 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font-family: 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 1.15rem;
+}
+
+.lil-preview-feature p,
+.lil-preview-admin p {
+  margin: 0.5rem 0 1rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.lil-preview-feature-soon {
+  margin-top: auto;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.65rem;
+}
+
+.lil-preview-admin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 20px;
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.1));
+}
+
+.lil-preview-admin p {
+  margin-bottom: 0;
+}
+
+.lil-preview-admin button {
+  flex: 0 0 auto;
+  padding: 0.75rem 1.15rem;
+  border: 1px solid var(--news-pill-active-border, rgba(245, 208, 254, 0.4));
+  border-radius: 999px;
+  background: var(--news-pill-active-bg, linear-gradient(135deg, #9333ea, #d946ef));
+  color: var(--news-pill-active-text, #fff);
+  font: 700 0.9rem 'Varela Round', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  cursor: pointer;
+  transition: filter 0.18s ease, transform 0.18s ease;
+}
+
+.lil-preview-admin button:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.lil-preview-admin button:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 3px;
+}
+
+@media (max-width: 820px) {
+  .lil-preview-features {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .lil-preview-hero {
+    min-height: 310px;
+    border-radius: 22px;
+  }
+
+  .lil-preview-features {
+    gap: 0.7rem;
+  }
+
+  .lil-preview-feature {
+    min-height: 225px;
+    padding: 1rem;
+  }
+
+  .lil-preview-admin {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 1.1rem;
+  }
+
+  .lil-preview-admin button {
+    width: 100%;
+  }
+}
+
 .lil-page-container {
   width: 100%;
   max-width: 860px;
@@ -5139,6 +5390,900 @@ html[data-system-font="true"] .story-provider-badge {
   border-radius: 9999px;
   background: #34d399;
   box-shadow: 0 0 8px #34d399;
+}
+
+.lil-view-toggle {
+  align-self: center;
+  display: inline-flex;
+  gap: 0.3rem;
+  padding: 0.3rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 9999px;
+  background: var(--news-card-bg, #1b0d33);
+}
+
+.lil-view-toggle-button {
+  border: 0;
+  border-radius: 9999px;
+  padding: 0.55rem 1rem;
+  color: var(--news-text-muted, #c084fc);
+  background: transparent;
+  font: 700 0.88rem 'Varela Round', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  cursor: pointer;
+}
+
+.lil-view-toggle-button.active {
+  color: var(--news-text, #fbf7ff);
+  background: var(--news-hover-bg, #2b144f);
+  box-shadow: 0 0 0 1px var(--news-accent, #c084fc);
+}
+
+.lil-view-toggle-button:focus-visible,
+.lil-openwebui-toolbar a:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 3px;
+}
+
+.lil-chat-view {
+  display: flex;
+  width: 100%;
+  max-width: 860px;
+  min-height: min(68vh, 680px);
+  flex-direction: column;
+  align-self: center;
+  overflow: hidden;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 20px;
+  background: var(--news-card-bg, #1b0d33);
+  box-shadow: var(--news-card-shadow, 0 4px 18px rgba(13, 5, 26, 0.35));
+}
+
+.lil-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-chat-header h2 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font: 700 1.2rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-chat-header p,
+.lil-chat-note {
+  margin: 0.25rem 0 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.82rem;
+}
+
+.lil-model-control {
+  display: flex;
+  min-width: min(13rem, 35%);
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.lil-model-control select {
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.3));
+  border-radius: 10px;
+  background: var(--news-bg, #10091d);
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+}
+
+.lil-model-control select:focus-visible,
+.lil-model-control button:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-model-control select:disabled {
+  opacity: 0.65;
+}
+
+.lil-model-error {
+  color: #fca5a5;
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.lil-model-error button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.lil-chat-new {
+  flex: 0 0 auto;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+  cursor: pointer;
+}
+
+.lil-chat-new:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.lil-chat-history {
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-chat-history-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.5rem;
+  color: var(--news-text-muted, #c084fc);
+}
+
+.lil-chat-history-heading h3 {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.lil-chat-history-heading > span {
+  font-size: 0.7rem;
+}
+
+.lil-chat-history-empty {
+  margin: 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.78rem;
+}
+
+.lil-chat-history-list {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0.1rem 0 0.3rem;
+  scrollbar-width: thin;
+  cursor: grab;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.lil-chat-history-list.is-dragging {
+  cursor: grabbing;
+  scroll-behavior: auto;
+}
+
+.lil-chat-history-item {
+  display: flex;
+  min-width: 9rem;
+  max-width: 15rem;
+  flex: 0 1 15rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.22));
+  border-radius: 10px;
+  background: var(--news-bg, rgba(16, 9, 29, 0.65));
+  color: var(--news-text, #fbf7ff);
+  text-align: left;
+  cursor: pointer;
+}
+
+.lil-chat-history-item:hover,
+.lil-chat-history-item.active {
+  border-color: var(--news-accent, #c084fc);
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.16));
+}
+
+.lil-chat-history-item:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-chat-history-item:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.lil-chat-history-title {
+  width: 100%;
+  overflow: hidden;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lil-chat-history-item time {
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.68rem;
+}
+
+.lil-chat-messages {
+  display: flex;
+  min-height: 280px;
+  flex: 1;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+  padding: 1.25rem;
+  overscroll-behavior-y: auto;
+}
+
+.lil-chat-welcome {
+  display: grid;
+  flex: 1;
+  place-content: center;
+  justify-items: center;
+  color: var(--news-text-muted, #c084fc);
+  text-align: center;
+}
+
+.lil-chat-welcome span {
+  font-size: 2rem;
+}
+
+.lil-chat-welcome p {
+  margin: 0.5rem 0 0;
+}
+
+.lil-chat-message {
+  width: fit-content;
+  max-width: min(88%, 42rem);
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+  border-radius: 16px;
+  background: var(--news-hover-bg, rgba(43, 20, 79, 0.7));
+}
+
+.lil-chat-message-user {
+  align-self: flex-end;
+  border-color: var(--news-accent, rgba(192, 132, 252, 0.5));
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.16));
+}
+
+.lil-chat-message-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.lil-chat-message-content {
+  color: var(--news-text, #fbf7ff);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.lil-chat-message-content p {
+  margin: 0.2rem 0;
+  white-space: pre-wrap;
+}
+
+.lil-chat-message-content .lil-answer-paragraph {
+  margin: 0.2rem 0 0.65rem;
+}
+
+.lil-chat-message-content .lil-answer-paragraph:last-child {
+  margin-bottom: 0;
+}
+
+.lil-chat-thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  align-self: flex-start;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.85rem;
+}
+
+.lil-chat-error {
+  margin: 0;
+  padding: 0.65rem 1.25rem 0;
+  color: #fca5a5;
+  font-size: 0.86rem;
+}
+
+.lil-chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.65rem;
+  padding: 0.85rem 1rem;
+  border-top: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-chat-form textarea {
+  width: 100%;
+  min-height: 48px;
+  max-height: 160px;
+  resize: vertical;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.3));
+  border-radius: 14px;
+  background: var(--news-bg, #10091d);
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+  line-height: 1.45;
+}
+
+.lil-chat-form textarea:focus-visible,
+.lil-chat-new:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-chat-form .lil-submit-btn {
+  flex: 0 0 auto;
+  min-height: 48px;
+}
+
+.lil-chat-note {
+  margin: 0;
+  padding: 0 1rem 0.8rem;
+  text-align: center;
+  font-size: 0.72rem;
+}
+
+.lil-code-view,
+.lil-games-view {
+  width: 100%;
+  max-width: 1000px;
+  align-self: center;
+  overflow: hidden;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 20px;
+  background: var(--news-card-bg, #1b0d33);
+  box-shadow: var(--news-card-shadow, 0 4px 18px rgba(13, 5, 26, 0.35));
+}
+
+.lil-code-header,
+.lil-games-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-code-header h2,
+.lil-games-header h2 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font: 700 1.2rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-code-header p,
+.lil-games-header p {
+  margin: 0.3rem 0 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.lil-code-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem;
+}
+
+.lil-code-prompt label,
+.lil-code-panel-heading h3,
+.lil-code-preview-panel h3 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.lil-code-prompt > div {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.lil-code-prompt input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.3));
+  border-radius: 12px;
+  background: var(--news-bg, #10091d);
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+}
+
+.lil-code-prompt input:focus-visible,
+.lil-code-editor:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-code-prompt .lil-submit-btn {
+  flex: 0 0 auto;
+}
+
+.lil-code-status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 1.25rem 0.75rem;
+  color: var(--news-text-muted, #c084fc);
+}
+
+.lil-code-workspace {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+  padding: 0 1.25rem 1rem;
+}
+
+.lil-code-editor-panel,
+.lil-code-preview-panel {
+  display: flex;
+  min-width: 0;
+  min-height: 360px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+  border-radius: 14px;
+  background: var(--news-bg, #10091d);
+}
+
+.lil-code-panel-heading,
+.lil-code-preview-panel > h3 {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-code-editor {
+  width: 100%;
+  min-height: 310px;
+  flex: 1;
+  resize: vertical;
+  padding: 0.85rem;
+  border: 0;
+  background: #130c20;
+  color: #e9d5ff;
+  font: 0.8rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.lil-code-preview {
+  display: block;
+  width: 100%;
+  min-height: 310px;
+  flex: 1;
+  border: 0;
+  background: #fff;
+}
+
+.lil-code-view > .lil-chat-note {
+  padding-bottom: 1rem;
+}
+
+.lil-games-view {
+  max-width: 650px;
+  padding-bottom: 1rem;
+}
+
+.lil-game-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem 0;
+}
+
+.lil-game-tabs button,
+.lil-trivia-count-picker button {
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--news-text-muted, #c084fc);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.lil-game-tabs button.active,
+.lil-trivia-count-picker button.active {
+  border-color: var(--news-accent, #c084fc);
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.18));
+  color: var(--news-text, #fbf7ff);
+}
+
+.lil-game-tabs button:focus-visible,
+.lil-trivia-count-picker button:focus-visible,
+.lil-trivia-topic-option input:focus-visible,
+.lil-trivia-option:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-trivia {
+  padding: 1rem 1.25rem;
+}
+
+.lil-trivia-topic-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.lil-trivia-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.lil-trivia-heading-row h3,
+.lil-trivia-question h3 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font: 700 1rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-trivia-heading-row p,
+.lil-trivia-note {
+  margin: 0.3rem 0 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.lil-trivia-count-picker {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.35rem;
+}
+
+.lil-trivia-count-picker button {
+  padding-inline: 0.6rem;
+  white-space: nowrap;
+}
+
+.lil-trivia-topic-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.lil-trivia-topic-option {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+  border-radius: 12px;
+  background: var(--news-bg, rgba(16, 9, 29, 0.55));
+  color: var(--news-text, #fbf7ff);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.lil-trivia-topic-option input {
+  flex: 0 0 auto;
+  accent-color: var(--news-accent, #c084fc);
+}
+
+.lil-trivia-topic-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lil-trivia-topic-option small {
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.68rem;
+}
+
+.lil-trivia-generate {
+  display: block;
+  margin: 1rem auto 0;
+}
+
+.lil-trivia-question {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.lil-trivia-progress {
+  display: flex;
+  justify-content: space-between;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.lil-trivia-question h3 {
+  font-size: 1.15rem;
+  line-height: 1.4;
+}
+
+.lil-trivia-options {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.lil-trivia-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.22));
+  border-radius: 12px;
+  background: var(--news-bg, rgba(16, 9, 29, 0.55));
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lil-trivia-option:not(:disabled):hover {
+  border-color: var(--news-accent, #c084fc);
+}
+
+.lil-trivia-option.correct {
+  border-color: #34d399;
+  background: rgba(16, 185, 129, 0.15);
+}
+
+.lil-trivia-option.incorrect {
+  border-color: #fb7185;
+  background: rgba(244, 63, 94, 0.13);
+}
+
+.lil-trivia-option:disabled {
+  cursor: default;
+}
+
+.lil-trivia-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 12px;
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.12));
+}
+
+.lil-trivia-feedback p {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.lil-trivia-quit {
+  align-self: center;
+}
+
+.lil-activity-picker {
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.lil-activity-worksheet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  gap: 1rem;
+}
+
+.lil-activity-worksheet {
+  overflow: hidden;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 16px;
+  background: var(--news-bg, rgba(16, 9, 29, 0.55));
+}
+
+.lil-activity-worksheet-preview {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: #fff;
+  cursor: pointer;
+}
+
+.lil-activity-worksheet-preview img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+}
+
+.lil-activity-worksheet-preview:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: -2px;
+}
+
+.lil-activity-worksheet-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.85rem;
+}
+
+.lil-activity-worksheet-content h3 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font: 700 1rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-activity-worksheet-content p {
+  flex: 1;
+  margin: 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.digital-worksheet-modal-backdrop.is-embedded {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.digital-worksheet-modal.is-embedded {
+  width: 100%;
+  height: min(78vh, 65rem);
+  height: min(78dvh, 65rem);
+  min-height: 32rem;
+  border: 0;
+  border-radius: 0 0 19px 19px;
+  box-shadow: none;
+}
+
+.lil-game-score {
+  display: grid;
+  min-width: 64px;
+  justify-items: center;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 14px;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.72rem;
+}
+
+.lil-game-score strong {
+  color: var(--news-text, #fbf7ff);
+  font-size: 1.1rem;
+}
+
+.lil-memory-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+}
+
+.lil-memory-card {
+  display: grid;
+  aspect-ratio: 1.2;
+  min-width: 0;
+  place-items: center;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.3));
+  border-radius: 16px;
+  background: linear-gradient(145deg, #55218a, #2b144f);
+  color: white;
+  font-size: clamp(1.5rem, 7vw, 2.5rem);
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.lil-memory-card:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.lil-memory-card.is-revealed {
+  background: var(--news-hover-bg, #2b144f);
+}
+
+.lil-memory-card.is-matched {
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(16, 185, 129, 0.16);
+  cursor: default;
+}
+
+.lil-game-reset {
+  display: block;
+  margin: 0 auto;
+}
+
+.lil-game-complete {
+  display: grid;
+  justify-items: center;
+  padding: 2rem 1rem;
+  color: var(--news-text, #fbf7ff);
+  text-align: center;
+}
+
+.lil-game-complete > span {
+  font-size: 3rem;
+}
+
+.lil-game-complete h3 {
+  margin: 0.75rem 0 0;
+  font: 700 1.5rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-game-complete p {
+  margin: 0.4rem 0 1rem;
+  color: var(--news-text-muted, #c084fc);
+}
+
+.lil-openwebui-view {
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 16px;
+  background: var(--news-card-bg, #1b0d33);
+}
+
+.lil-openwebui-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.7rem 1rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.82rem;
+}
+
+.lil-openwebui-toolbar p {
+  margin: 0;
+}
+
+.lil-openwebui-toolbar a {
+  flex-shrink: 0;
+  color: var(--news-text, #fbf7ff);
+  font-weight: 700;
+}
+
+.lil-openwebui-frame {
+  display: block;
+  width: 100%;
+  height: min(76vh, 900px);
+  min-height: 580px;
+  border: 0;
+  background: #fff;
 }
 
 /* Hero Header */
@@ -5826,6 +6971,64 @@ html[data-system-font="true"] .story-provider-badge {
   flex-shrink: 0;
 }
 
+.lil-floating-avatar {
+  position: fixed;
+  z-index: 1200;
+  right: max(1.25rem, env(safe-area-inset-right));
+  bottom: max(1.25rem, env(safe-area-inset-bottom));
+  display: block;
+  width: 68px;
+  height: 68px;
+  border: 3px solid rgba(245, 208, 254, 0.82);
+  border-radius: 50%;
+  background: #7c3aed;
+  box-shadow: 0 8px 26px rgba(13, 5, 26, 0.48), 0 0 0 5px rgba(192, 132, 252, 0.14);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.lil-floating-avatar:hover {
+  transform: translateY(-4px) scale(1.04);
+  box-shadow: 0 12px 30px rgba(13, 5, 26, 0.52), 0 0 0 7px rgba(192, 132, 252, 0.2);
+}
+
+.lil-floating-avatar:focus-visible {
+  outline: 3px solid #f0abfc;
+  outline-offset: 5px;
+}
+
+.lil-floating-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.lil-floating-avatar-status {
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+  width: 16px;
+  height: 16px;
+  border: 3px solid var(--news-card-bg, #1b0d33);
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.55);
+}
+
+@media (max-width: 600px) {
+  .lil-floating-avatar {
+    right: max(0.9rem, env(safe-area-inset-right));
+    bottom: max(0.9rem, env(safe-area-inset-bottom));
+    width: 58px;
+    height: 58px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lil-floating-avatar {
+    transition: none;
+  }
+}
+
 @media (max-width: 640px) {
   .lil-search-form {
     flex-direction: column;
@@ -5839,5 +7042,115 @@ html[data-system-font="true"] .story-provider-badge {
   }
   .lil-sources-grid {
     grid-template-columns: 1fr;
+  }
+  .lil-openwebui-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .lil-openwebui-frame {
+    height: 72vh;
+    min-height: 420px;
+  }
+}
+
+@media (max-width: 520px) {
+  .lil-view-toggle {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.1rem;
+    padding: 0.2rem;
+  }
+
+  .lil-view-toggle-button {
+    padding: 0.5rem 0.25rem;
+    font-size: 0.68rem;
+  }
+
+  .lil-chat-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 0.85rem;
+  }
+
+  .lil-model-control {
+    min-width: 100%;
+  }
+
+  .lil-code-header .lil-model-control {
+    min-width: 45%;
+  }
+
+  .lil-games-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 0.85rem;
+  }
+
+  .lil-games-header .lil-model-control {
+    min-width: 100%;
+  }
+
+  .lil-trivia {
+    padding: 0.85rem;
+  }
+
+  .lil-trivia-heading-row {
+    flex-direction: column;
+  }
+
+  .lil-trivia-topic-list {
+    grid-template-columns: 1fr;
+  }
+
+  .lil-activity-picker {
+    padding: 0.85rem;
+  }
+
+  .digital-worksheet-modal.is-embedded {
+    height: 78dvh;
+    min-height: 26rem;
+    border-radius: 0 0 19px 19px;
+  }
+
+  .lil-chat-header p {
+    max-width: 15rem;
+    font-size: 0.75rem;
+  }
+
+  .lil-chat-messages {
+    padding: 0.85rem;
+  }
+
+  .lil-chat-message {
+    max-width: 94%;
+  }
+
+  .lil-chat-form {
+    gap: 0.4rem;
+    padding: 0.65rem;
+  }
+
+  .lil-chat-form .lil-submit-btn {
+    width: auto;
+    padding: 0.7rem 0.75rem;
+  }
+
+  .lil-code-prompt > div {
+    flex-direction: column;
+  }
+
+  .lil-code-prompt .lil-submit-btn {
+    width: 100%;
+  }
+
+  .lil-code-workspace {
+    grid-template-columns: 1fr;
+    padding-inline: 0.75rem;
+  }
+
+  .lil-memory-grid {
+    gap: 0.5rem;
+    padding-inline: 0.75rem;
   }
 }

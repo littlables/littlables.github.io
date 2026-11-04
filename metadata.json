@@ -2,5 +2,5 @@
   "name": "littlables",
   "description": "A cozy, family-friendly news feed for curious minds, bringing together stories about family, animals, creativity, technology, world events, and good news.",
   "permissions": [],
-  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "capabilities": []
 }

@@ -6,6 +6,7 @@ interface DigitalWorksheetModalProps {
   allWorksheets: WorksheetItem[];
   onClose: () => void;
   onSelectWorksheet: (worksheet: WorksheetItem) => void;
+  embedded?: boolean;
 }
 
 type ToolMode = 'puzzle' | 'bucket' | 'brush' | 'eraser';
@@ -280,6 +281,7 @@ export const DigitalWorksheetModal: React.FC<DigitalWorksheetModalProps> = ({
   allWorksheets,
   onClose,
   onSelectWorksheet,
+  embedded = false,
 }) => {
   const isHiddenObjects = worksheet?.id === 'halloween-2026-hidden-objects-coloring-page';
   const isWordSearch = worksheet?.id === 'halloween-2026-word-search';
@@ -1067,15 +1069,15 @@ export const DigitalWorksheetModal: React.FC<DigitalWorksheetModalProps> = ({
 
   return (
     <div
-      className="digital-worksheet-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Interactive Digital Activity: ${worksheet.title}`}
+      className={`digital-worksheet-modal-backdrop${embedded ? ' is-embedded' : ''}`}
+      role={embedded ? undefined : 'dialog'}
+      aria-modal={embedded ? undefined : true}
+      aria-label={embedded ? undefined : `Interactive Digital Activity: ${worksheet.title}`}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (!embedded && e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="digital-worksheet-modal">
+      <div className={`digital-worksheet-modal${embedded ? ' is-embedded' : ''}`}>
         {/* Top Studio Header */}
         <header className="digital-worksheet-header">
           <div className="digital-worksheet-title-group">
@@ -1118,10 +1120,10 @@ export const DigitalWorksheetModal: React.FC<DigitalWorksheetModalProps> = ({
               type="button"
               className="digital-worksheet-close-btn"
               onClick={onClose}
-              aria-label="Close Digital Activity Studio"
-              title="Close"
+              aria-label={embedded ? 'Back to games' : 'Close Digital Activity Studio'}
+              title={embedded ? 'Back to games' : 'Close'}
             >
-              ✕
+              {embedded ? '←' : '✕'}
             </button>
           </div>
         </header>

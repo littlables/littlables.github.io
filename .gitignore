@@ -7,5 +7,6 @@ dist/
 *.zip
 .vite/
 node_modules/
+.env*
 public/assets/aistudio/
 .aistudio/

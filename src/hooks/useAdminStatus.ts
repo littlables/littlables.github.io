@@ -20,11 +20,11 @@ const ADMIN_EMAIL_SET = getConfiguredAdminEmails();
  * any external /admin URL for visitors.
  */
 export function useAdminStatus() {
-  const { user, profile, loading } = useAuth();
+  const { user, profile, loading, profileLoading } = useAuth();
 
   return useMemo(() => {
     if (!user) {
-      return { isAdmin: false, adminLogin: null, checking: loading };
+      return { isAdmin: false, adminLogin: null, checking: loading || profileLoading };
     }
 
     const email = (user.email || '').trim().toLowerCase();
@@ -43,7 +43,7 @@ export function useAdminStatus() {
     return {
       isAdmin: hasAdminRole,
       adminLogin,
-      checking: loading,
+      checking: loading || profileLoading,
     };
-  }, [user, profile, loading]);
+  }, [user, profile, loading, profileLoading]);
 }

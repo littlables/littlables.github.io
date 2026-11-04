@@ -19,7 +19,7 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAbout, onOpenDisclaimer, o
             data-umami-event="Open-Lil-Footer"
             onClick={onOpenLil}
           >
-            Ask Lil ✨
+            Meet Lil ✨
           </button>
         )}
         <button

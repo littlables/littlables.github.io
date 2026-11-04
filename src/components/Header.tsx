@@ -72,7 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
       : null;
 
   const handleBrandClick = () => {
-    if (isLoading) return;
+    if (isLoading && !isLilActive) return;
     trackHomeLogoRefresh();
     onHomeClick();
   };
@@ -158,13 +158,13 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       <div className="news-header-controls">
-        {isAdmin && onOpenLil && (
+        {onOpenLil && (
           <button
             id="lil-btn"
             type="button"
             className={`header-icon-button header-lil-button${isLilActive ? ' is-active' : ''}`}
-            title="Ask Lil — Live Google Search Data with Gemini"
-            aria-label="Open Ask Lil Search"
+            title={isAdmin ? 'Open Lil workspace' : 'Meet Lil — Coming soon'}
+            aria-label={isAdmin ? 'Open Lil workspace' : 'Preview Lil, coming soon'}
             data-umami-event="Open-Lil-Page"
             onClick={onOpenLil}
           >
@@ -291,4 +291,3 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
-

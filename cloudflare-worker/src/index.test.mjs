@@ -36,6 +36,313 @@ async function adminCookie(login = 'littlables') {
   return createAdminSessionCookie(login, authEnv.GITHUB_SESSION_SECRET);
 }
 
+test('GET /api/lil/status reports only whether Lil is online without proxy credentials', async () => {
+  const originalFetch = globalThis.fetch;
+  let upstreamRequest;
+  globalThis.fetch = async (input, options = {}) => {
+    upstreamRequest = { url: new URL(String(input)), headers: new Headers(options.headers) };
+    return Response.json({ online: true, model: 'private-model-name' }, {
+      headers: { 'Cache-Control': 'no-store' }
+    });
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/status'), {
+      LIL_API_ORIGIN: 'https://lil-api.example'
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { online: true });
+    assert.equal(upstreamRequest.url.href, 'https://lil-api.example/api/lil/status');
+    assert.equal(upstreamRequest.headers.has('X-Lil-OpenWebUI-Proxy-Secret'), false);
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('GET /api/lil/status fails closed when the laptop cannot be reached', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('offline', { status: 503 });
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/status'), {
+      LIL_API_ORIGIN: 'https://lil-api.example'
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { online: false });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('POST /api/lil/search is registered and requires admin authentication', async () => {
+  const response = await worker.fetch(new Request('https://worker.example/api/lil/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: 'hello' })
+  }), {
+    SUPABASE_URL: 'https://supabase.example',
+    SUPABASE_SECRET_KEY: 'test-secret'
+  }, {});
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error, 'Supabase sign-in is required');
+});
+
+test('POST /api/lil/search forwards the browser session ID after admin authentication', async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/api/lil/search') {
+      forwarded = JSON.parse(options.body);
+      return Response.json({ reply: 'Hello from Lil.' });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer site-access-token'
+      },
+      body: JSON.stringify({ query: 'hello', sessionId: 'browser-session-123', model: 'configured-model' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      LIL_API_ORIGIN: 'https://lil-api.example',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(forwarded, { query: 'hello', sessionId: 'browser-session-123', model: 'configured-model' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('POST /api/lil/chat forwards bounded code requests after admin authentication', async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  let forwardedPath;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/api/lil/chat') {
+      forwardedPath = url.pathname;
+      forwarded = JSON.parse(options.body);
+      return Response.json({ reply: 'Hello again.' });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const messages = [
+      { role: 'user', content: 'Hi Lil!' },
+      { role: 'assistant', content: 'Hello! What are you curious about?' },
+      { role: 'user', content: 'Tell me about Saturn.' }
+    ];
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer test-admin-token'
+      },
+      body: JSON.stringify({ messages, sessionId: 'chat-session-123', mode: 'code', model: 'code-model' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      LIL_API_ORIGIN: 'https://lil-api.example',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.equal(forwardedPath, '/api/lil/chat');
+    assert.deepEqual(forwarded, {
+      messages,
+      mode: 'code',
+      model: 'code-model',
+      sessionId: 'chat-session-123',
+      source: 'web-lil-code'
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('GET /api/lil/models requires admin authentication', async () => {
+  const response = await worker.fetch(new Request('https://worker.example/api/lil/models'), {
+    SUPABASE_URL: 'https://supabase.example',
+    SUPABASE_SECRET_KEY: 'service-secret'
+  }, {});
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error, 'Supabase sign-in is required');
+});
+
+test('GET /api/lil/models returns configured Open WebUI models for admins', async () => {
+  const originalFetch = globalThis.fetch;
+  let forwardedAuthorization;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/api/lil/models') {
+      forwardedAuthorization = new Headers(options.headers).get('Authorization');
+      return Response.json({
+        models: [{ id: 'model-a', name: 'Model A' }],
+        defaultModel: 'model-a'
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/models', {
+      headers: { Authorization: 'Bearer site-access-token' }
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      LIL_API_ORIGIN: 'https://lil-api.example',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      models: [{ id: 'model-a', name: 'Model A' }],
+      defaultModel: 'model-a'
+    });
+    assert.equal(forwardedAuthorization, 'Bearer site-access-token');
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Open WebUI gateway gives the sign-in relay to unauthenticated visitors', async () => {
+  const response = await worker.fetch(new Request('https://lil.littlables.com/'), {
+    LIL_WEBUI_SESSION_SECRET: 'test-webui-session-secret-at-least-32-chars'
+  }, {});
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('Content-Security-Policy'), /frame-ancestors https:\/\/littlables\.com/);
+  const html = await response.text();
+  assert.match(html, /LITTLABLES_OPENWEBUI_AUTH_REQUIRED/);
+  assert.match(html, /window\.location\.replace\('https:\/\/littlables\.com\/lil\?openWebUI=1'\)/);
+  assert.match(html, /class="continue"/);
+  assert.match(html, /background: linear-gradient\(145deg/);
+  assert.match(html, /aria-live="polite"/);
+});
+
+test('Open WebUI gateway rejects sign-in from non-admin site accounts', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'regular-user', email: 'user@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: false }]);
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://lil.littlables.com/__lil/auth', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer regular-user-token',
+        Origin: 'https://lil.littlables.com'
+      }
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'test-service-key',
+      LIL_WEBUI_SESSION_SECRET: 'test-webui-session-secret-at-least-32-chars'
+    }, {});
+
+    assert.equal(response.status, 403);
+    assert.equal(response.headers.has('Set-Cookie'), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Open WebUI gateway verifies a site admin and proxies with a private origin secret', async () => {
+  const originalFetch = globalThis.fetch;
+  let upstreamRequest;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/_internal/openwebui/api/version') {
+      upstreamRequest = { url, headers: new Headers(options.headers) };
+      return Response.json({ version: 'test' });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const env = {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'test-service-key',
+      LIL_API_ORIGIN: 'https://lil-api.example',
+      LIL_OPENWEBUI_PROXY_SECRET: 'test-proxy-secret-with-at-least-32-chars',
+      LIL_WEBUI_SESSION_SECRET: 'test-webui-session-secret-at-least-32-chars'
+    };
+    const authResponse = await worker.fetch(new Request('https://lil.littlables.com/__lil/auth', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer admin-user-token',
+        Origin: 'https://lil.littlables.com'
+      }
+    }), env, {});
+    assert.equal(authResponse.status, 204);
+    const sessionCookie = authResponse.headers.get('Set-Cookie').split(';', 1)[0];
+
+    const response = await worker.fetch(new Request('https://lil.littlables.com/api/version', {
+      headers: {
+        Cookie: `${sessionCookie}; open-webui=chat-session`,
+        Authorization: 'Bearer open-webui-token'
+      }
+    }), env, {});
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { version: 'test' });
+    assert.equal(upstreamRequest.url.search, '');
+    assert.equal(upstreamRequest.headers.get('X-Lil-OpenWebUI-Proxy-Secret'), env.LIL_OPENWEBUI_PROXY_SECRET);
+    assert.equal(upstreamRequest.headers.get('X-Forwarded-Host'), 'lil.littlables.com');
+    assert.equal(upstreamRequest.headers.get('X-Forwarded-Proto'), 'https');
+    assert.equal(upstreamRequest.headers.get('Cookie'), 'open-webui=chat-session');
+    assert.equal(upstreamRequest.headers.get('Authorization'), 'Bearer open-webui-token');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('admin page offers GitHub sign-in when there is no valid session', async () => {
   const response = await worker.fetch(new Request('https://worker.example/admin'), {}, {});
   assert.equal(response.status, 200);

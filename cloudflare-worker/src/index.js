@@ -88,6 +88,7 @@ import { startSyncRun, updateSyncRun, finishSyncRun, isSyncRunHeartbeatDue, summ
 import { stageHalloweenBatch } from './halloween-batch.mjs';
 import { matchAdsToStory, rankAdsByEmbeddingSimilarity } from './ad-keyword-matcher.mjs';
 import { createAiUsageCounter, AI_USAGE_MODEL_LLAMA, AI_USAGE_MODEL_FLUX, AI_USAGE_MODEL_SDXL, AI_USAGE_MODEL_BGE } from './ai-usage-log.mjs';
+import { handleOpenWebUIGateway } from './openwebui-gateway.mjs';
 
 const MAX_REQUEST_BYTES = 64_000;
 const MAX_PAGE_BYTES = 1_000_000;
@@ -113,6 +114,34 @@ function jsonResponse(body, status = 200) {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
   });
+}
+
+async function getLilOnlineStatus(env) {
+  const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
+  const statusResponse = (online) => new Response(JSON.stringify({ online }), {
+    headers: {
+      ...corsHeaders,
+      'Cache-Control': 'no-store',
+      'Content-Type': 'application/json; charset=utf-8'
+    }
+  });
+  if (!configuredOrigin) return statusResponse(false);
+
+  try {
+    const apiOrigin = new URL(configuredOrigin);
+    if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
+      return statusResponse(false);
+    }
+
+    const response = await fetch(`${apiOrigin.origin}/api/lil/status`, {
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok) return statusResponse(false);
+    const status = await response.json();
+    return statusResponse(status?.online === true);
+  } catch {
+    return statusResponse(false);
+  }
 }
 
 async function handleEngagementEvent(request, env) {
@@ -3099,7 +3128,7 @@ async function matchImageFromEdgeCache(cacheKey) {
   return null;
 }
 
-async function buildLittlablesImagePrompt(story, env, usage = null) {
+async function buildLilImagePrompt(story, env, usage = null) {
   const suppliedText = [story.aiSummary, story.description, story.content]
     .map(value => extractPageText(decodeHtml(value || '')))
     .filter(Boolean)
@@ -3208,7 +3237,7 @@ async function runWorkersAiImageModel(prompt, seed, env, usage = null) {
 }
 
 async function generateAdminStoryImage(story, requestUrl, env, usage = null) {
-  const prompt = await buildLittlablesImagePrompt(story, env, usage);
+  const prompt = await buildLilImagePrompt(story, env, usage);
   const seed = Math.floor(Math.random() * 1_000_000);
   const generated = await runWorkersAiImageModel(prompt, seed, env, usage);
 
@@ -3276,12 +3305,18 @@ async function serveAiStoryImage(request, env) {
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.hostname === 'lil.littlables.com') {
+      return handleOpenWebUIGateway(request, env);
+    }
     if (request.method === 'OPTIONS') {
       const cors = getCorsHeaders(request);
       return new Response(null, { status: 204, headers: Object.keys(cors).length > 0 ? cors : corsHeaders });
     }
-    const url = new URL(request.url);
     const pathname = url.pathname;
+    if (request.method === 'GET' && pathname === '/api/lil/status') {
+      return getLilOnlineStatus(env);
+    }
     if (pathname === '/admin' || pathname.startsWith('/admin/')) {
       const resp = await serveAdmin(request, env);
       // Add CORS headers for frontend admin editing (GitHub session via credentials:include)
@@ -3319,6 +3354,133 @@ export default {
         return jsonResponse({ items: feed.items, count: feed.items.length });
       } catch (err) {
         return jsonResponse({ items: [], count: 0, error: err.message }, 500);
+      }
+    }
+    // Lil runs on the admin's laptop. The Worker verifies site admin access
+    // first, then forwards only this request to the private tunnel origin.
+    if (request.method === 'GET' && pathname === '/api/lil/models') {
+      try {
+        if (env.SUMMARY_RATE_LIMITER) {
+          const limit = await env.SUMMARY_RATE_LIMITER.limit({
+            key: `lil:${request.headers.get('CF-Connecting-IP') || 'unknown'}`
+          });
+          if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
+        }
+
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+
+        const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
+        if (!configuredOrigin) return jsonResponse({ error: 'Lil laptop connection is not configured.' }, 503);
+
+        let apiOrigin;
+        try {
+          apiOrigin = new URL(configuredOrigin);
+        } catch {
+          return jsonResponse({ error: 'Lil laptop connection has an invalid URL.' }, 503);
+        }
+        if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
+          return jsonResponse({ error: 'Lil laptop connection must be an HTTPS origin.' }, 503);
+        }
+
+        const upstream = await fetch(`${apiOrigin.origin}/api/lil/models`, {
+          headers: { Authorization: request.headers.get('Authorization') || '' },
+          signal: AbortSignal.timeout(15_000)
+        });
+        const result = await upstream.json().catch(() => ({ error: 'Lil laptop returned an invalid response.' }));
+        return new Response(JSON.stringify(result), {
+          status: upstream.status,
+          headers: { ...corsHeaders, 'Cache-Control': 'no-store', 'Content-Type': 'application/json; charset=utf-8' }
+        });
+      } catch (err) {
+        console.error('Lil model list request failed:', err);
+        return jsonResponse({ error: 'Could not load models from Open WebUI.' }, 502);
+      }
+    }
+    if (request.method === 'POST' && (pathname === '/api/lil/search' || pathname === '/api/lil/chat')) {
+      try {
+        const isChatRequest = pathname === '/api/lil/chat';
+        const contentLength = Number(request.headers.get('Content-Length') || 0);
+        if (contentLength > 16_384) return jsonResponse({ error: 'Lil request is too large.' }, 413);
+        if (env.SUMMARY_RATE_LIMITER) {
+          const limit = await env.SUMMARY_RATE_LIMITER.limit({
+            key: `lil:${request.headers.get('CF-Connecting-IP') || 'unknown'}`
+          });
+          if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
+        }
+
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+
+        const payload = await request.json().catch(() => null);
+        let forwardedRequest;
+        if (isChatRequest && Array.isArray(payload?.messages)) {
+          if (payload.messages.length < 1 || payload.messages.length > 12) {
+            return jsonResponse({ error: 'Chat history must contain between 1 and 12 messages.' }, 400);
+          }
+          let totalLength = 0;
+          const messages = [];
+          for (const message of payload.messages) {
+            if (!message || !['user', 'assistant'].includes(message.role) ||
+                typeof message.content !== 'string' || !message.content.trim() ||
+                new TextEncoder().encode(message.content).byteLength > 8_000 ||
+                (message.role === 'user' && message.content.length > 2_000)) {
+              return jsonResponse({ error: 'Chat history contains an invalid message.' }, 400);
+            }
+            totalLength += new TextEncoder().encode(message.content).byteLength;
+            messages.push({ role: message.role, content: message.content.trim() });
+          }
+          if (totalLength > 12_000 || messages[messages.length - 1].role !== 'user') {
+            return jsonResponse({ error: 'Chat history is too long or does not end with a user message.' }, 400);
+          }
+          forwardedRequest = {
+            messages,
+            mode: payload.mode === 'code' ? 'code' : 'chat'
+          };
+        } else {
+          const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
+          if (!query) return jsonResponse({ error: 'Please provide a search question or topic.' }, 400);
+          if (query.length > 500) return jsonResponse({ error: 'Lil questions must be 500 characters or fewer.' }, 400);
+          forwardedRequest = { query };
+        }
+        if (payload.model !== undefined) {
+          if (typeof payload.model !== 'string' || !payload.model.trim() || payload.model.trim().length > 200) {
+            return jsonResponse({ error: 'The selected model is invalid.' }, 400);
+          }
+          forwardedRequest.model = payload.model.trim();
+        }
+        if (typeof payload.sessionId === 'string' && payload.sessionId.trim()) {
+          forwardedRequest.sessionId = payload.sessionId.trim().slice(0, 200);
+        }
+        if (isChatRequest) forwardedRequest.source = `web-lil-${forwardedRequest.mode || 'chat'}`;
+
+        const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
+        if (!configuredOrigin) return jsonResponse({ error: 'Lil laptop connection is not configured.' }, 503);
+
+        let apiOrigin;
+        try {
+          apiOrigin = new URL(configuredOrigin);
+        } catch {
+          return jsonResponse({ error: 'Lil laptop connection has an invalid URL.' }, 503);
+        }
+        if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
+          return jsonResponse({ error: 'Lil laptop connection must be an HTTPS origin.' }, 503);
+        }
+
+        const upstream = await fetch(`${apiOrigin.origin}/api/lil/${isChatRequest ? 'chat' : 'search'}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: request.headers.get('Authorization') || ''
+          },
+          body: JSON.stringify(forwardedRequest),
+          signal: AbortSignal.timeout(125_000)
+        });
+        const result = await upstream.json().catch(() => ({ error: 'Lil laptop returned an invalid response.' }));
+        return jsonResponse(result, upstream.status);
+      } catch (err) {
+        console.error('Lil laptop request failed:', err);
+        return jsonResponse({ error: 'Could not reach Lil on the Ollama laptop. Check that the laptop and tunnel are online.' }, 502);
       }
     }
     // Taste Reader step 2: manual selection run for the gated site page.
@@ -3843,4 +4005,3 @@ export default {
     }
   }
 };
-

@@ -41,6 +41,10 @@ export const NEWS_CONFIG = {
   workerUrl: 'https://hello-ai.cryptokatiee.workers.dev/'
 };
 
+export const LIL_CONFIG = {
+  openWebUIUrl: 'https://lil.littlables.com/'
+};
+
 export const SUPABASE_CONFIG = Object.freeze({
   url: 'https://vehbstectghtqqyiitmi.supabase.co',
   publishableKey: 'sb_publishable_NNWeMzQK6GCcsAl4Ij1iiw_1sT0v44k',

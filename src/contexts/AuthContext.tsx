@@ -66,6 +66,7 @@ interface AuthContextValue {
   user: User | null;
   profile: Profile | null;
   loading: boolean;
+  profileLoading: boolean;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string) => Promise<void>;
   verifyEmailOtp: (email: string, token: string) => Promise<void>;
@@ -134,6 +135,7 @@ function restoreSignInReturnPath() {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [profileLoadedForUserId, setProfileLoadedForUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -170,16 +172,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const client = getSupabaseClient();
     if (!client || !session?.user) {
       setProfile(null);
+      setProfileLoadedForUserId(null);
       return;
     }
 
     let cancelled = false;
     const userId = session.user.id;
-    client
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle()
+    Promise.resolve(
+      client
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle()
+    )
       .then(async ({ data }) => {
         if (cancelled) return;
         const meta = session.user.user_metadata || {};
@@ -204,6 +209,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           .select()
           .single();
         if (!cancelled && created) setProfile(created as Profile);
+      })
+      .catch((error: unknown) => {
+        console.warn('Profile lookup failed:', error);
+      })
+      .finally(() => {
+        if (!cancelled) setProfileLoadedForUserId(userId);
       });
     return () => {
       cancelled = true;
@@ -321,8 +332,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         session,
         user: session?.user ?? null,
-        profile,
+        profile: session?.user && profileLoadedForUserId === session.user.id ? profile : null,
         loading,
+        profileLoading: Boolean(session?.user && profileLoadedForUserId !== session.user.id),
         signInWithGoogle,
         signInWithEmail,
         verifyEmailOtp,
