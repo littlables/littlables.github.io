@@ -35,9 +35,11 @@ export const LilPreviewPage: React.FC<LilPreviewPageProps> = ({ onAdminSignIn })
   <main className="news-grid lil-main-grid">
     <div className="lil-preview-page">
       <section className="lil-preview-hero">
-        <div className="lil-preview-orbit lil-preview-orbit-one" aria-hidden="true" />
-        <div className="lil-preview-orbit lil-preview-orbit-two" aria-hidden="true" />
-        <img className="lil-preview-avatar" src="/img/lil-avatar.svg" alt="" />
+        <div className="lil-preview-avatar-wrap">
+          <div className="lil-preview-orbit lil-preview-orbit-one" aria-hidden="true" />
+          <div className="lil-preview-orbit lil-preview-orbit-two" aria-hidden="true" />
+          <img className="lil-preview-avatar" src="/img/lil-avatar.svg" alt="" />
+        </div>
         <p className="lil-preview-eyebrow">A new adventure is growing</p>
         <h1>Meet Lil</h1>
         <p className="lil-preview-intro">
