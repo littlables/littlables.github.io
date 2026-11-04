@@ -2001,6 +2001,15 @@ a:visited,
   font-family: 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
+.footer-lil-avatar {
+  width: 1.15em;
+  height: 1.15em;
+  border-radius: 50%;
+  object-fit: cover;
+  display: inline-block;
+  vertical-align: -0.18em;
+}
+
 .site-footer a,
 .site-footer button,
 .site-info-close {
@@ -6320,6 +6329,14 @@ html[data-system-font="true"] .story-provider-badge {
 .lil-avatar-emoji {
   font-size: 2.1rem;
   line-height: 1;
+}
+
+.lil-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
 }
 
 .lil-avatar-sparkle {
