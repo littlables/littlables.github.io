@@ -1,4 +1,4 @@
-import { NEWS_CATEGORIES } from './news-provider-config.mjs';
+import { NEWS_CATEGORIES, getNewsProviderConfig } from './news-provider-config.mjs';
 import { normalizeInterestKeywords, INTEREST_KEYWORD_IDS, INTEREST_KEYWORDS, KEYWORD_DESCRIPTIONS_VERSION, EXCLUDED_KEYWORD_IDS, SPACE_DEFINITIONS, deriveStoryRegion, isValidInterestKeyword } from './interest-keywords.mjs';
 import { embedText, EMBEDDING_MODEL, cosineSimilarity } from './embedding-classifier.mjs';
 import { createAiUsageCounter, AI_USAGE_MODEL_LLAMA, AI_USAGE_MODEL_BGE } from './ai-usage-log.mjs';
@@ -1082,6 +1082,182 @@ export async function getRecentSyncRuns(env, limit = 5) {
   }
 }
 
+// Per-provider profile for the admin dashboard: info, live status, last
+// runs, 30-day lifetime totals from the request logs, and recent requests.
+// Returns null for an unknown provider. The provider row fetch throws on
+// failure (the route turns it into a 502); the supplementary sections
+// fail open to empty so one bad query cannot blank the whole profile.
+// Lifetime totals come from news_provider_logs, which the cron prunes at
+// 30 days — so "lifetime" here means the last 30 days, not all time.
+export async function getProviderProfile(env, providerId) {
+  const config = getNewsProviderConfig(providerId);
+  if (!config) return null;
+  const rowQuery = new URLSearchParams({
+    select: 'provider,status,started_at,last_attempt_at,last_success_at,stories_saved,last_error,cooldown_until,rate_limit_reset_at,updated_at',
+    provider: `eq.${providerId}`
+  });
+  const rowRes = await fetch(supabaseUrl(env, SYNC_TABLE, rowQuery), {
+    headers: supabaseHeaders(env)
+  });
+  if (!rowRes.ok) throw new Error(`Provider status lookup failed (HTTP ${rowRes.status})`);
+  const rowRows = await rowRes.json();
+  const row = Array.isArray(rowRows) && rowRows.length ? rowRows[0] : {
+    provider: providerId,
+    status: 'never',
+    started_at: null,
+    last_attempt_at: null,
+    last_success_at: null,
+    stories_saved: 0,
+    last_error: null,
+    cooldown_until: null,
+    rate_limit_reset_at: null,
+    updated_at: null
+  };
+  const cooldown = getProviderCooldownState(providerId);
+  const runs = await getRecentSyncRuns(env, 20);
+  const activeRun = runs.find(r => r.status === 'running') || null;
+  const activeEntry = activeRun?.summary?.providers?.find(p => p.provider === providerId) || null;
+  const runEntryFor = (run) => {
+    const entry = (run.summary?.providers || []).find(p => p.provider === providerId);
+    if (entry) return entry;
+    if (run.provider === providerId) return { status: null, storiesSaved: null, lastCategory: null };
+    return null;
+  };
+  const lastRuns = [];
+  for (const run of runs) {
+    const entry = runEntryFor(run);
+    if (!entry) continue;
+    lastRuns.push({
+      id: run.id,
+      trigger: run.trigger,
+      status: run.status,
+      startedAt: run.started_at,
+      finishedAt: run.finished_at,
+      pairsDone: run.pairs_done,
+      pairsTotal: run.pairs_total,
+      providerStatus: entry?.status ?? entry?.lastStatus ?? null,
+      storiesSaved: entry?.storiesSaved ?? null,
+      lastCategory: entry?.lastCategory ?? null
+    });
+  }
+  let lifetime = null;
+  let recentLogs = [];
+  try {
+    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+    const lifetimeRows = [];
+    let offset = 0;
+    let truncated = false;
+    for (let page = 0; page < 10; page++) {
+      const pageQuery = new URLSearchParams({
+        select: 'status,items_fetched,stories_saved,created_at',
+        provider: `eq.${providerId}`,
+        created_at: `gte.${since}`,
+        order: 'created_at.desc',
+        limit: '1000',
+        offset: String(offset)
+      });
+      const pageRes = await fetch(supabaseUrl(env, 'news_provider_logs', pageQuery), {
+        headers: supabaseHeaders(env)
+      });
+      if (!pageRes.ok) throw new Error(`Provider log lookup failed (HTTP ${pageRes.status})`);
+      const pageRows = await pageRes.json();
+      if (!Array.isArray(pageRows)) break;
+      lifetimeRows.push(...pageRows);
+      if (pageRows.length < 1000) break;
+      offset += 1000;
+      if (page === 9) truncated = true;
+    }
+    let fetched = 0;
+    let saved = 0;
+    let succeeded = 0;
+    let failed = 0;
+    let rateLimited = 0;
+    let lastSuccessAt = null;
+    for (const logRow of lifetimeRows) {
+      fetched += Number(logRow.items_fetched) || 0;
+      saved += Number(logRow.stories_saved) || 0;
+      if (logRow.status === 'succeeded') {
+        succeeded++;
+        if (!lastSuccessAt) lastSuccessAt = logRow.created_at;
+      } else if (logRow.status === 'failed') {
+        failed++;
+      } else if (logRow.status === 'rate_limited') {
+        rateLimited++;
+      }
+    }
+    lifetime = {
+      windowDays: 30,
+      totalRequests: lifetimeRows.length,
+      fetched,
+      saved,
+      succeeded,
+      failed,
+      rateLimited,
+      lastSuccessAt,
+      truncated
+    };
+    const recentQuery = new URLSearchParams({
+      select: 'category,trigger_source,status,http_status,duration_ms,attempt_count,items_fetched,stories_saved,error_message,created_at',
+      provider: `eq.${providerId}`,
+      order: 'created_at.desc',
+      limit: '10'
+    });
+    const recentRes = await fetch(supabaseUrl(env, 'news_provider_logs', recentQuery), {
+      headers: supabaseHeaders(env)
+    });
+    if (recentRes.ok) {
+      const recentRows = await recentRes.json();
+      if (Array.isArray(recentRows)) recentLogs = recentRows;
+    }
+  } catch (err) {
+    console.warn(`Provider profile log aggregation failed for ${providerId}:`, err.message);
+    lifetime = null;
+    recentLogs = [];
+  }
+  return {
+    provider: {
+      id: providerId,
+      label: config.label,
+      description: config.description || '',
+      adapter: config.adapter,
+      endpoint: config.endpoint || '',
+      categories: Object.keys(config.categories || {}),
+      updatePauseMs: config.updatePauseMs || 0,
+      credentialName: config.credential || null,
+      credentialConfigured: !config.credential || Boolean(env[config.credential]),
+      status: row.status,
+      startedAt: row.started_at,
+      lastAttemptAt: row.last_attempt_at,
+      lastSuccessAt: row.last_success_at,
+      storiesSavedLastRun: row.stories_saved,
+      lastError: row.last_error,
+      cooldownUntil: cooldown?.cooldownUntil || row.cooldown_until || null,
+      rateLimitResetAt: cooldown?.rateLimitResetAt || row.rate_limit_reset_at || null,
+      rateLimitRemaining: cooldown?.rateLimitRemaining ?? null,
+      updatedAt: row.updated_at
+    },
+    live: {
+      running: row.status === 'running',
+      activeRun: activeRun ? {
+        id: activeRun.id,
+        trigger: activeRun.trigger,
+        startedAt: activeRun.started_at,
+        currentProvider: activeRun.current_provider,
+        currentCategory: activeRun.current_category,
+        pairsDone: activeRun.pairs_done,
+        pairsTotal: activeRun.pairs_total,
+        lastActivityAt: activeRun.last_activity_at
+      } : null,
+      pairsDone: activeEntry?.pairs ?? 0,
+      pairsTotal: activeRun?.pairs_total ?? 7,
+      isCurrentPair: activeRun?.current_provider === providerId
+    },
+    lastRuns,
+    lifetime,
+    recentLogs
+  };
+}
+
 // Logs for the admin panel: the database is the source of truth (it
 // survives worker redeploys), with the in-memory ring as fallback for
 // entries whose DB write failed. Reading the ring alone blanks the list
@@ -1658,6 +1834,41 @@ export async function finishNewsProviderSync(env, provider, {
     })
   });
   if (!response.ok) throw new Error(`Saving ${provider} update status failed (HTTP ${response.status})`);
+}
+
+// Status-only update for paths that must NOT disturb a live sweep's claim.
+// Unlike finishNewsProviderSync, this never writes started_at: the retry
+// drain calls it after a successful save, and a provider claimed by a
+// running sweep keeps its started_at (and therefore its claim) untouched.
+// Fail-open: returns false instead of throwing, so a status write can
+// never fail a drain job that already saved its stories.
+export async function updateProviderSyncStatus(env, provider, {
+  status,
+  storiesSaved,
+  error = null
+} = {}) {
+  try {
+    const query = new URLSearchParams({ provider: `eq.${provider}` });
+    const response = await fetch(supabaseUrl(env, SYNC_TABLE, query), {
+      method: 'PATCH',
+      headers: supabaseHeaders(env, { Prefer: 'return=minimal' }),
+      body: JSON.stringify({
+        status,
+        last_success_at: status === 'succeeded' ? new Date().toISOString() : undefined,
+        stories_saved: storiesSaved,
+        last_error: error,
+        updated_at: new Date().toISOString()
+      })
+    });
+    if (!response.ok) {
+      console.warn(`Saving ${provider} status update failed (HTTP ${response.status})`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn(`Saving ${provider} status update failed:`, err.message);
+    return false;
+  }
 }
 
 export async function resetNewsProviderSync(env, provider, resetBy) {

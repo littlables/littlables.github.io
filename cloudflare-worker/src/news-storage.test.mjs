@@ -9,6 +9,7 @@ import {
   createApprovedCustomNewsStory,
   effectiveDisplayCategories,
   finishNewsProviderSync,
+  updateProviderSyncStatus,
   getNewsAdminSnapshot,
   getStoredNewsFeed,
   disapproveNewsStory,
@@ -1552,6 +1553,51 @@ test('loadProviderCooldownsFromDbIfStale loads once per window', async () => {
     assert.equal(forced, 1);
     assert.equal(fetches, 2);
     clearProviderCooldownState('stale-test-provider');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('updateProviderSyncStatus patches status fields without touching started_at', async () => {
+  const originalFetch = globalThis.fetch;
+  // Simulate a provider row claimed by a live sweep: started_at is set.
+  const dbRow = { provider: 'gnews', status: 'running', started_at: '2026-10-30T20:00:00.000Z', stories_saved: 0, last_error: null };
+  const patches = [];
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.hostname === 'supabase.example' && url.pathname.endsWith('/news_provider_sync') && options.method === 'PATCH') {
+      const body = JSON.parse(options.body);
+      patches.push(body);
+      Object.assign(dbRow, body);
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+  try {
+    const ok = await updateProviderSyncStatus(env, 'gnews', { status: 'succeeded', storiesSaved: 42 });
+    assert.equal(ok, true);
+    assert.equal(patches.length, 1);
+    assert.ok(!('started_at' in patches[0]), 'PATCH must never include started_at');
+    assert.equal(patches[0].status, 'succeeded');
+    assert.equal(patches[0].stories_saved, 42);
+    assert.equal(patches[0].last_error, null);
+    assert.ok(patches[0].last_success_at);
+    assert.ok(patches[0].updated_at);
+    assert.equal(dbRow.started_at, '2026-10-30T20:00:00.000Z', 'live sweep claim survives the update');
+    assert.equal(dbRow.status, 'succeeded');
+    assert.equal(dbRow.stories_saved, 42);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('updateProviderSyncStatus fails open on HTTP errors and thrown fetches', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(null, { status: 500 });
+    assert.equal(await updateProviderSyncStatus(env, 'gnews', { status: 'succeeded', storiesSaved: 1 }), false);
+    globalThis.fetch = async () => { throw new Error('network down'); };
+    assert.equal(await updateProviderSyncStatus(env, 'gnews', { status: 'succeeded', storiesSaved: 1 }), false);
   } finally {
     globalThis.fetch = originalFetch;
   }

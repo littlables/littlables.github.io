@@ -2592,7 +2592,11 @@ export function getAdminPage() {
           line.textContent = runProviderName(entry.provider) + ' ' + entry.pairs + '/' + categories.length +
             (entry.lastStatus ? ' · last: ' + entry.lastStatus + (catLabel ? ' (' + catLabel + ')' : '') : '');
         } else {
-          line.textContent = runProviderName(entry.provider) + ' ' + entry.status +
+          // Runs closed mid-flight (e.g. by Unstick-all) keep the
+          // in-progress summary shape, which has lastStatus instead of
+          // status and no storiesSaved — fall back so they never render
+          // as "undefined".
+          line.textContent = runProviderName(entry.provider) + ' ' + (entry.status ?? entry.lastStatus ?? 'unknown') +
             (entry.storiesSaved != null ? ' · ' + entry.storiesSaved + ' saved' : '');
         }
         list.append(line);
@@ -2637,6 +2641,167 @@ export function getAdminPage() {
       if (providerList) info.append(providerList);
       strip.append(info);
       return strip;
+    }
+
+    function openProviderProfile(providerId) {
+      state.providerProfileId = providerId;
+      state.providerProfile = { status: 'loading' };
+      renderProviders(state.providers || []);
+      request('/admin/api/providers/' + encodeURIComponent(providerId) + '/profile')
+        .then((data) => {
+          if (state.providerProfileId !== providerId) return;
+          state.providerProfile = { status: 'ready', data: data };
+          renderProviders(state.providers || []);
+        })
+        .catch(() => {
+          if (state.providerProfileId !== providerId) return;
+          state.providerProfile = { status: 'error' };
+          renderProviders(state.providers || []);
+        });
+    }
+
+    function closeProviderProfile() {
+      state.providerProfileId = null;
+      state.providerProfile = null;
+      renderProviders(state.providers || []);
+    }
+
+    function buildProviderProfileView() {
+      const wrap = document.createElement('div');
+      wrap.className = 'provider-profile';
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.className = 'secondary small-btn';
+      backBtn.textContent = '← Providers';
+      backBtn.addEventListener('click', closeProviderProfile);
+      wrap.append(backBtn);
+      const profile = state.providerProfile || { status: 'loading' };
+      if (profile.status === 'loading') {
+        const loading = document.createElement('p');
+        loading.className = 'muted';
+        loading.textContent = 'Loading profile…';
+        wrap.append(loading);
+        return wrap;
+      }
+      if (profile.status !== 'ready' || !profile.data) {
+        const err = document.createElement('p');
+        err.className = 'muted';
+        err.textContent = 'Could not load this provider profile.';
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'secondary small-btn';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => openProviderProfile(state.providerProfileId));
+        wrap.append(err, retry);
+        return wrap;
+      }
+      const data = profile.data;
+      const p = data.provider;
+      const title = document.createElement('h2');
+      title.textContent = p.label || p.id;
+      wrap.append(title);
+      const refreshBtn = document.createElement('button');
+      refreshBtn.type = 'button';
+      refreshBtn.className = 'secondary small-btn';
+      refreshBtn.textContent = 'Refresh';
+      refreshBtn.addEventListener('click', () => openProviderProfile(p.id));
+      wrap.append(refreshBtn);
+      const addSection = (heading) => {
+        const h = document.createElement('h3');
+        h.textContent = heading;
+        wrap.append(h);
+      };
+      const addLine = (label, value) => {
+        if (value == null || value === '') return;
+        const line = document.createElement('p');
+        line.className = 'provider-profile-line';
+        line.textContent = label + ': ' + value;
+        wrap.append(line);
+      };
+      const catLabel = (id) => categories.find((c) => c.id === id)?.label || id;
+      addSection('Info');
+      addLine('Adapter', p.adapter);
+      addLine('Endpoint', p.endpoint);
+      addLine('Categories', (p.categories || []).map(catLabel).join(', '));
+      addLine('API key', p.credentialName
+        ? (p.credentialConfigured ? 'Configured' : 'Set Worker secret: ' + p.credentialName)
+        : 'No API key required');
+      if (p.updatePauseMs > 0) addLine('Pause between topics', (p.updatePauseMs / 1000) + 's');
+      addLine('Status', p.status);
+      addLine('Last success', p.lastSuccessAt ? formatDateTime(new Date(p.lastSuccessAt)) : '');
+      addLine('Last error', p.lastError);
+      addLine('Cooldown until', p.cooldownUntil ? formatDateTime(new Date(p.cooldownUntil)) : '');
+      addLine('Rate-limit reset', p.rateLimitResetAt ? formatDateTime(new Date(p.rateLimitResetAt)) : '');
+      addLine('Stories saved last run', p.storiesSavedLastRun);
+      addSection('Live status');
+      const live = data.live || {};
+      addLine('Running', live.running ? 'Yes' : 'No');
+      if (live.activeRun) {
+        if (live.isCurrentPair && live.activeRun.currentCategory) {
+          addLine('Current pair', catLabel(live.activeRun.currentCategory));
+        }
+        addLine('Pairs done', live.pairsDone + '/' + live.pairsTotal);
+        addLine('Run started', live.activeRun.startedAt ? formatDateTime(new Date(live.activeRun.startedAt)) : '');
+        addLine('Last activity', live.activeRun.lastActivityAt ? formatDateTime(new Date(live.activeRun.lastActivityAt)) : '');
+      } else if (live.running) {
+        addLine('Note', 'Claim held but no live run row — possibly stuck');
+      }
+      addSection('Last runs');
+      if (!data.lastRuns || !data.lastRuns.length) {
+        const none = document.createElement('p');
+        none.className = 'muted';
+        none.textContent = 'No runs recorded yet.';
+        wrap.append(none);
+      } else {
+        data.lastRuns.forEach((run) => {
+          const line = document.createElement('p');
+          line.className = 'provider-profile-line';
+          line.textContent = formatDateTime(new Date(run.finishedAt || run.startedAt)) + ' · ' +
+            runTriggerLabel(run) + ' · ' + (run.providerStatus || 'unknown') +
+            (run.storiesSaved != null ? ' · ' + run.storiesSaved + ' saved' : '') +
+            (run.lastCategory ? ' (' + catLabel(run.lastCategory) + ')' : '');
+          wrap.append(line);
+        });
+      }
+      addSection('Lifetime totals (last 30 days)');
+      if (!data.lifetime) {
+        const none = document.createElement('p');
+        none.className = 'muted';
+        none.textContent = 'Lifetime totals unavailable.';
+        wrap.append(none);
+      } else {
+        addLine('Requests', data.lifetime.totalRequests);
+        addLine('Fetched', data.lifetime.fetched);
+        addLine('Saved', data.lifetime.saved);
+        addLine('Succeeded', data.lifetime.succeeded);
+        addLine('Failed', data.lifetime.failed);
+        addLine('Rate-limited', data.lifetime.rateLimited);
+        addLine('Last success', data.lifetime.lastSuccessAt ? formatDateTime(new Date(data.lifetime.lastSuccessAt)) : '');
+        if (data.lifetime.truncated) {
+          const note = document.createElement('p');
+          note.className = 'muted';
+          note.textContent = 'Totals capped at 10,000 requests — counts may be incomplete.';
+          wrap.append(note);
+        }
+      }
+      addSection('Recent requests');
+      if (!data.recentLogs || !data.recentLogs.length) {
+        const none = document.createElement('p');
+        none.className = 'muted';
+        none.textContent = 'No recent requests.';
+        wrap.append(none);
+      } else {
+        data.recentLogs.forEach((log) => {
+          const line = document.createElement('p');
+          line.className = 'provider-profile-line tabular-nums';
+          line.textContent = formatDateTime(new Date(log.created_at)) + ' · ' + catLabel(log.category || 'all') +
+            ' · ' + (log.trigger_source || '') + ' · ' + log.status +
+            ' · fetched ' + (log.items_fetched || 0) + ', saved ' + (log.stories_saved || 0) +
+            (log.error_message ? ' · ' + log.error_message : '');
+          wrap.append(line);
+        });
+      }
+      return wrap;
     }
 
     function renderProviders(providers) {
@@ -2711,6 +2876,11 @@ export function getAdminPage() {
       autoBar.append(autoInfo, autoActions);
       providersEl.append(autoBar);
 
+      if (state.providerProfileId) {
+        providersEl.append(buildProviderProfileView());
+        return;
+      }
+
       providers.forEach((provider) => {
         const card = document.createElement('article');
         card.className = 'provider';
@@ -2724,7 +2894,12 @@ export function getAdminPage() {
         button.textContent = state.busy.has(provider.id) ? 'Updating…' : 'Update';
         button.disabled = state.busy.has(provider.id) || provider.status === 'running' || !provider.configured;
         button.addEventListener('click', () => updateProvider(provider.id));
-        head.append(title, button);
+        const profileButton = document.createElement('button');
+        profileButton.type = 'button';
+        profileButton.className = 'secondary small-btn';
+        profileButton.textContent = 'Profile';
+        profileButton.addEventListener('click', () => openProviderProfile(provider.id));
+        head.append(title, button, profileButton);
         if (provider.status === 'running') {
           const resetButton = document.createElement('button');
           resetButton.type = 'button';
