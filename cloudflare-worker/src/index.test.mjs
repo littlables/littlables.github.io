@@ -2493,3 +2493,236 @@ test('admin provider profile rejects unknown providers', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('GET /api/lil/memories is registered and requires admin authentication', async () => {
+  const response = await worker.fetch(new Request('https://worker.example/api/lil/memories'), {
+    SUPABASE_URL: 'https://supabase.example',
+    SUPABASE_SECRET_KEY: 'test-secret'
+  }, {});
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error, 'Supabase sign-in is required');
+});
+
+test('GET /api/lil/memories returns only the admin user memories', async () => {
+  const originalFetch = globalThis.fetch;
+  let memoriesUrl;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/rest/v1/lil_memories') {
+      memoriesUrl = url;
+      return Response.json([
+        { id: 'mem-1', kind: 'personality', content: 'Lil is curious.', source: 'manual', source_key: null, created_at: '2026-11-04T00:00:00Z' }
+      ]);
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/memories', {
+      headers: { Authorization: 'Bearer test-token' }
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.memories.length, 1);
+    assert.equal(body.memories[0].id, 'mem-1');
+    assert.equal(memoriesUrl.searchParams.get('user_id'), 'eq.admin-user');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('POST /api/lil/memories saves a memory for the admin user and rejects bad kinds', async () => {
+  const originalFetch = globalThis.fetch;
+  let savedBody;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/rest/v1/lil_memories' && options.method === 'POST') {
+      savedBody = JSON.parse(options.body);
+      return Response.json([{ ...savedBody, id: 'mem-new', created_at: '2026-11-04T00:00:00Z' }], { status: 201 });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/memories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-token' },
+      body: JSON.stringify({ kind: 'personality', content: 'Lil is curious.' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(response.status, 201);
+    const body = await response.json();
+    assert.equal(body.id, 'mem-new');
+    assert.equal(savedBody.user_id, 'admin-user');
+    assert.equal(savedBody.kind, 'personality');
+    assert.equal(savedBody.source, 'manual');
+
+    const badResponse = await worker.fetch(new Request('https://worker.example/api/lil/memories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-token' },
+      body: JSON.stringify({ kind: 'bogus', content: 'Nope.' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(badResponse.status, 400);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('DELETE /api/lil/memories deletes only the admin user memory and 404s otherwise', async () => {
+  const originalFetch = globalThis.fetch;
+  let deleteUrl;
+  let returnRows = [{ id: 'mem-1' }];
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/rest/v1/lil_memories' && options.method === 'DELETE') {
+      deleteUrl = url;
+      return Response.json(returnRows);
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const env = {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    };
+    const headers = { Authorization: 'Bearer test-token' };
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/memories?id=mem-1', { method: 'DELETE', headers }), env, {});
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, id: 'mem-1' });
+    assert.equal(deleteUrl.searchParams.get('id'), 'eq.mem-1');
+    assert.equal(deleteUrl.searchParams.get('user_id'), 'eq.admin-user');
+
+    returnRows = [];
+    const missing = await worker.fetch(new Request('https://worker.example/api/lil/memories?id=mem-gone', { method: 'DELETE', headers }), env, {});
+    assert.equal(missing.status, 404);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('POST /api/lil/search injects admin memories into the system prompt', async () => {
+  const originalFetch = globalThis.fetch;
+  let aiMessages;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/rest/v1/lil_memories') {
+      return Response.json([
+        { id: 'mem-1', kind: 'personality', content: 'Lil is curious, playful, and warm.', created_at: '2026-11-04T00:00:00Z' }
+      ]);
+    }
+    if (url.pathname === '/rest/v1/rpc/increment_lil_usage') {
+      return new Response(null, { status: 200 });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-token' },
+      body: JSON.stringify({ query: 'hello' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      AI: {
+        run: async (model, options) => {
+          aiMessages = options.messages;
+          return { choices: [{ message: { content: 'Hello from Lil.' } }] };
+        }
+      }
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.match(aiMessages[0].content, /Lil\u2019s memories/);
+    assert.match(aiMessages[0].content, /curious, playful, and warm/);
+    assert.deepEqual(aiMessages[1], { role: 'user', content: 'hello' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('POST /api/lil/search still answers when memory recall fails', async () => {
+  const originalFetch = globalThis.fetch;
+  let aiMessages;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/rest/v1/lil_memories') {
+      throw new Error('memory store down');
+    }
+    if (url.pathname === '/rest/v1/rpc/increment_lil_usage') {
+      return new Response(null, { status: 200 });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-token' },
+      body: JSON.stringify({ query: 'hello' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      AI: {
+        run: async (model, options) => {
+          aiMessages = options.messages;
+          return { choices: [{ message: { content: 'Hello from Lil.' } }] };
+        }
+      }
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(aiMessages[0].content, /Lil\u2019s memories/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
