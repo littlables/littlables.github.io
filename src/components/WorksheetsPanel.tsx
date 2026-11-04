@@ -8,7 +8,7 @@ import {
 } from '../services/urlService';
 import { DigitalWorksheetModal } from './DigitalWorksheetModal';
 
-type WorksheetType = 'coloring-page' | 'hidden-puzzle' | 'word-search';
+export type WorksheetType = 'coloring-page' | 'hidden-puzzle' | 'word-search';
 type WorksheetFilter = 'all' | WorksheetType;
 
 const WORKSHEET_TYPES: { id: WorksheetType; label: string }[] = [

@@ -556,7 +556,7 @@ body {
   border-radius: 16px;
   color: var(--news-text, #f8fafc);
   box-shadow: 0 20px 60px rgb(0 0 0 / 45%);
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
 }
 
 .worksheets-dropdown-scroll {
@@ -5431,6 +5431,54 @@ html[data-system-font="true"] .story-provider-badge {
   font-size: 0.82rem;
 }
 
+.lil-model-control {
+  display: flex;
+  min-width: min(13rem, 35%);
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.lil-model-control select {
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.3));
+  border-radius: 10px;
+  background: var(--news-bg, #10091d);
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+}
+
+.lil-model-control select:focus-visible,
+.lil-model-control button:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-model-control select:disabled {
+  opacity: 0.65;
+}
+
+.lil-model-error {
+  color: #fca5a5;
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.lil-model-error button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .lil-chat-new {
   flex: 0 0 auto;
   padding: 0.5rem 0.75rem;
@@ -5447,6 +5495,100 @@ html[data-system-font="true"] .story-provider-badge {
   cursor: default;
 }
 
+.lil-chat-history {
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+}
+
+.lil-chat-history-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.5rem;
+  color: var(--news-text-muted, #c084fc);
+}
+
+.lil-chat-history-heading h3 {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.lil-chat-history-heading > span {
+  font-size: 0.7rem;
+}
+
+.lil-chat-history-empty {
+  margin: 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.78rem;
+}
+
+.lil-chat-history-list {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0.1rem 0 0.3rem;
+  scrollbar-width: thin;
+  cursor: grab;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.lil-chat-history-list.is-dragging {
+  cursor: grabbing;
+  scroll-behavior: auto;
+}
+
+.lil-chat-history-item {
+  display: flex;
+  min-width: 9rem;
+  max-width: 15rem;
+  flex: 0 1 15rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.22));
+  border-radius: 10px;
+  background: var(--news-bg, rgba(16, 9, 29, 0.65));
+  color: var(--news-text, #fbf7ff);
+  text-align: left;
+  cursor: pointer;
+}
+
+.lil-chat-history-item:hover,
+.lil-chat-history-item.active {
+  border-color: var(--news-accent, #c084fc);
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.16));
+}
+
+.lil-chat-history-item:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-chat-history-item:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.lil-chat-history-title {
+  width: 100%;
+  overflow: hidden;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lil-chat-history-item time {
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.68rem;
+}
+
 .lil-chat-messages {
   display: flex;
   min-height: 280px;
@@ -5455,7 +5597,7 @@ html[data-system-font="true"] .story-provider-badge {
   gap: 1rem;
   overflow-y: auto;
   padding: 1.25rem;
-  overscroll-behavior: contain;
+  overscroll-behavior-y: auto;
 }
 
 .lil-chat-welcome {
@@ -5720,6 +5862,284 @@ html[data-system-font="true"] .story-provider-badge {
 .lil-games-view {
   max-width: 650px;
   padding-bottom: 1rem;
+}
+
+.lil-game-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem 0;
+}
+
+.lil-game-tabs button,
+.lil-trivia-count-picker button {
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--news-text-muted, #c084fc);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.lil-game-tabs button.active,
+.lil-trivia-count-picker button.active {
+  border-color: var(--news-accent, #c084fc);
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.18));
+  color: var(--news-text, #fbf7ff);
+}
+
+.lil-game-tabs button:focus-visible,
+.lil-trivia-count-picker button:focus-visible,
+.lil-trivia-topic-option input:focus-visible,
+.lil-trivia-option:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: 2px;
+}
+
+.lil-trivia {
+  padding: 1rem 1.25rem;
+}
+
+.lil-trivia-topic-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.lil-trivia-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.lil-trivia-heading-row h3,
+.lil-trivia-question h3 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font: 700 1rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-trivia-heading-row p,
+.lil-trivia-note {
+  margin: 0.3rem 0 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.lil-trivia-count-picker {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.35rem;
+}
+
+.lil-trivia-count-picker button {
+  padding-inline: 0.6rem;
+  white-space: nowrap;
+}
+
+.lil-trivia-topic-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.lil-trivia-topic-option {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.2));
+  border-radius: 12px;
+  background: var(--news-bg, rgba(16, 9, 29, 0.55));
+  color: var(--news-text, #fbf7ff);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.lil-trivia-topic-option input {
+  flex: 0 0 auto;
+  accent-color: var(--news-accent, #c084fc);
+}
+
+.lil-trivia-topic-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lil-trivia-topic-option small {
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.68rem;
+}
+
+.lil-trivia-generate {
+  display: block;
+  margin: 1rem auto 0;
+}
+
+.lil-trivia-question {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.lil-trivia-progress {
+  display: flex;
+  justify-content: space-between;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.lil-trivia-question h3 {
+  font-size: 1.15rem;
+  line-height: 1.4;
+}
+
+.lil-trivia-options {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.lil-trivia-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.22));
+  border-radius: 12px;
+  background: var(--news-bg, rgba(16, 9, 29, 0.55));
+  color: var(--news-text, #fbf7ff);
+  font: inherit;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lil-trivia-option:not(:disabled):hover {
+  border-color: var(--news-accent, #c084fc);
+}
+
+.lil-trivia-option.correct {
+  border-color: #34d399;
+  background: rgba(16, 185, 129, 0.15);
+}
+
+.lil-trivia-option.incorrect {
+  border-color: #fb7185;
+  background: rgba(244, 63, 94, 0.13);
+}
+
+.lil-trivia-option:disabled {
+  cursor: default;
+}
+
+.lil-trivia-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 12px;
+  background: var(--news-ai-bg, rgba(168, 85, 247, 0.12));
+}
+
+.lil-trivia-feedback p {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.lil-trivia-quit {
+  align-self: center;
+}
+
+.lil-activity-picker {
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.lil-activity-worksheet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  gap: 1rem;
+}
+
+.lil-activity-worksheet {
+  overflow: hidden;
+  border: 1px solid var(--news-card-border, rgba(192, 132, 252, 0.25));
+  border-radius: 16px;
+  background: var(--news-bg, rgba(16, 9, 29, 0.55));
+}
+
+.lil-activity-worksheet-preview {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: #fff;
+  cursor: pointer;
+}
+
+.lil-activity-worksheet-preview img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+}
+
+.lil-activity-worksheet-preview:focus-visible {
+  outline: 2px solid var(--news-accent, #c084fc);
+  outline-offset: -2px;
+}
+
+.lil-activity-worksheet-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.85rem;
+}
+
+.lil-activity-worksheet-content h3 {
+  margin: 0;
+  color: var(--news-text, #fbf7ff);
+  font: 700 1rem 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.lil-activity-worksheet-content p {
+  flex: 1;
+  margin: 0;
+  color: var(--news-text-muted, #c084fc);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.digital-worksheet-modal-backdrop.is-embedded {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.digital-worksheet-modal.is-embedded {
+  width: 100%;
+  height: min(78vh, 65rem);
+  height: min(78dvh, 65rem);
+  min-height: 32rem;
+  border: 0;
+  border-radius: 0 0 19px 19px;
+  box-shadow: none;
 }
 
 .lil-game-score {
@@ -6620,7 +7040,48 @@ html[data-system-font="true"] .story-provider-badge {
 
   .lil-chat-header {
     align-items: flex-start;
+    flex-wrap: wrap;
     padding: 0.85rem;
+  }
+
+  .lil-model-control {
+    min-width: 100%;
+  }
+
+  .lil-code-header .lil-model-control {
+    min-width: 45%;
+  }
+
+  .lil-games-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 0.85rem;
+  }
+
+  .lil-games-header .lil-model-control {
+    min-width: 100%;
+  }
+
+  .lil-trivia {
+    padding: 0.85rem;
+  }
+
+  .lil-trivia-heading-row {
+    flex-direction: column;
+  }
+
+  .lil-trivia-topic-list {
+    grid-template-columns: 1fr;
+  }
+
+  .lil-activity-picker {
+    padding: 0.85rem;
+  }
+
+  .digital-worksheet-modal.is-embedded {
+    height: 78dvh;
+    min-height: 26rem;
+    border-radius: 0 0 19px 19px;
   }
 
   .lil-chat-header p {

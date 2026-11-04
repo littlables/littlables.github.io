@@ -117,7 +117,7 @@ test('POST /api/lil/search forwards the browser session ID after admin authentic
         'Content-Type': 'application/json',
         Authorization: 'Bearer site-access-token'
       },
-      body: JSON.stringify({ query: 'hello', sessionId: 'browser-session-123' })
+      body: JSON.stringify({ query: 'hello', sessionId: 'browser-session-123', model: 'configured-model' })
     }), {
       SUPABASE_URL: 'https://supabase.example',
       SUPABASE_SECRET_KEY: 'service-secret',
@@ -126,7 +126,7 @@ test('POST /api/lil/search forwards the browser session ID after admin authentic
     }, {});
 
     assert.equal(response.status, 200);
-    assert.deepEqual(forwarded, { query: 'hello', sessionId: 'browser-session-123' });
+    assert.deepEqual(forwarded, { query: 'hello', sessionId: 'browser-session-123', model: 'configured-model' });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -164,7 +164,7 @@ test('POST /api/lil/chat forwards bounded code requests after admin authenticati
         'Content-Type': 'application/json',
         Authorization: 'Bearer test-admin-token'
       },
-      body: JSON.stringify({ messages, sessionId: 'chat-session-123', mode: 'code' })
+      body: JSON.stringify({ messages, sessionId: 'chat-session-123', mode: 'code', model: 'code-model' })
     }), {
       SUPABASE_URL: 'https://supabase.example',
       SUPABASE_SECRET_KEY: 'service-secret',
@@ -174,7 +174,66 @@ test('POST /api/lil/chat forwards bounded code requests after admin authenticati
 
     assert.equal(response.status, 200);
     assert.equal(forwardedPath, '/api/lil/chat');
-    assert.deepEqual(forwarded, { messages, mode: 'code', sessionId: 'chat-session-123', source: 'web-lil-code' });
+    assert.deepEqual(forwarded, {
+      messages,
+      mode: 'code',
+      model: 'code-model',
+      sessionId: 'chat-session-123',
+      source: 'web-lil-code'
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('GET /api/lil/models requires admin authentication', async () => {
+  const response = await worker.fetch(new Request('https://worker.example/api/lil/models'), {
+    SUPABASE_URL: 'https://supabase.example',
+    SUPABASE_SECRET_KEY: 'service-secret'
+  }, {});
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error, 'Supabase sign-in is required');
+});
+
+test('GET /api/lil/models returns configured Open WebUI models for admins', async () => {
+  const originalFetch = globalThis.fetch;
+  let forwardedAuthorization;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/api/lil/models') {
+      forwardedAuthorization = new Headers(options.headers).get('Authorization');
+      return Response.json({
+        models: [{ id: 'model-a', name: 'Model A' }],
+        defaultModel: 'model-a'
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/models', {
+      headers: { Authorization: 'Bearer site-access-token' }
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      LIL_API_ORIGIN: 'https://lil-api.example',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) }
+    }, {});
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      models: [{ id: 'model-a', name: 'Model A' }],
+      defaultModel: 'model-a'
+    });
+    assert.equal(forwardedAuthorization, 'Bearer site-access-token');
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
   } finally {
     globalThis.fetch = originalFetch;
   }

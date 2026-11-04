@@ -3331,6 +3331,45 @@ export default {
     }
     // Lil runs on the admin's laptop. The Worker verifies site admin access
     // first, then forwards only this request to the private tunnel origin.
+    if (request.method === 'GET' && pathname === '/api/lil/models') {
+      try {
+        if (env.SUMMARY_RATE_LIMITER) {
+          const limit = await env.SUMMARY_RATE_LIMITER.limit({
+            key: `lil:${request.headers.get('CF-Connecting-IP') || 'unknown'}`
+          });
+          if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
+        }
+
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+
+        const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
+        if (!configuredOrigin) return jsonResponse({ error: 'Lil laptop connection is not configured.' }, 503);
+
+        let apiOrigin;
+        try {
+          apiOrigin = new URL(configuredOrigin);
+        } catch {
+          return jsonResponse({ error: 'Lil laptop connection has an invalid URL.' }, 503);
+        }
+        if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
+          return jsonResponse({ error: 'Lil laptop connection must be an HTTPS origin.' }, 503);
+        }
+
+        const upstream = await fetch(`${apiOrigin.origin}/api/lil/models`, {
+          headers: { Authorization: request.headers.get('Authorization') || '' },
+          signal: AbortSignal.timeout(15_000)
+        });
+        const result = await upstream.json().catch(() => ({ error: 'Lil laptop returned an invalid response.' }));
+        return new Response(JSON.stringify(result), {
+          status: upstream.status,
+          headers: { ...corsHeaders, 'Cache-Control': 'no-store', 'Content-Type': 'application/json; charset=utf-8' }
+        });
+      } catch (err) {
+        console.error('Lil model list request failed:', err);
+        return jsonResponse({ error: 'Could not load models from Open WebUI.' }, 502);
+      }
+    }
     if (request.method === 'POST' && (pathname === '/api/lil/search' || pathname === '/api/lil/chat')) {
       try {
         const isChatRequest = pathname === '/api/lil/chat';
@@ -3376,6 +3415,12 @@ export default {
           if (!query) return jsonResponse({ error: 'Please provide a search question or topic.' }, 400);
           if (query.length > 500) return jsonResponse({ error: 'Lil questions must be 500 characters or fewer.' }, 400);
           forwardedRequest = { query };
+        }
+        if (payload.model !== undefined) {
+          if (typeof payload.model !== 'string' || !payload.model.trim() || payload.model.trim().length > 200) {
+            return jsonResponse({ error: 'The selected model is invalid.' }, 400);
+          }
+          forwardedRequest.model = payload.model.trim();
         }
         if (typeof payload.sessionId === 'string' && payload.sessionId.trim()) {
           forwardedRequest.sessionId = payload.sessionId.trim().slice(0, 200);
