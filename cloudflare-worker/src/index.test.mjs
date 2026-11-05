@@ -139,7 +139,7 @@ test('POST /api/lil/search answers via Workers AI and logs per-user usage after 
   }
 });
 
-test('POST /api/lil/search grounds answers in Wikipedia and Serper results; balloons ride along separately', async () => {
+test('POST /api/lil/search grounds answers in Wikipedia, Ceramic and Serper results; balloons ride along separately', async () => {
   const originalFetch = globalThis.fetch;
   let aiOptions;
   let searchLogBody;
@@ -208,21 +208,28 @@ test('POST /api/lil/search grounds answers in Wikipedia and Serper results; ball
             choices: [{ message: { content: 'Pandas are bears that eat bamboo.' } }],
             usage: { prompt_tokens: 50, completion_tokens: 9 }
           };
-        }
+        },
+        websearch: async () => Response.json({
+          items: [
+            { title: 'Ceramic panda facts', url: 'https://example.com/ceramic-pandas', description: 'Ceramic panda facts.' }
+          ],
+          metadata: { query: 'pandas', requestId: 'req-1', latencyMs: 42 }
+        })
       }
     }, {});
 
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.answer, 'Pandas are bears that eat bamboo.');
-    // Grounding sources are Wikipedia + Serper only.
-    assert.equal(body.sources.length, 3);
+    // Grounding sources are Wikipedia + Ceramic + Serper.
+    assert.equal(body.sources.length, 4);
     assert.equal(body.sources[0].title, 'Panda');
+    assert.equal(body.sources[1].title, 'Ceramic panda facts');
     // The approved balloon rides along in its own field, never in sources.
     assert.equal(body.balloons.length, 1);
     assert.equal(body.balloons[0].title, 'Giant pandas eat bamboo all day');
-    assert.deepEqual(body.searchQueries, ['Wikipedia: pandas', 'Serper: pandas']);
-    assert.match(body.apiKeyNotice, /Lil checked Wikipedia and live web results for this answer\./);
+    assert.deepEqual(body.searchQueries, ['Wikipedia: pandas', 'Ceramic: pandas', 'Serper: pandas']);
+    assert.match(body.apiKeyNotice, /Lil checked Wikipedia, Ceramic and live web results for this answer\./);
     // The flagged balloon never reaches the model, the sources, or the balloons.
     assert.equal(body.sources.some((s) => s.title.includes('Stock market')), false);
     assert.equal(body.balloons.some((s) => s.title.includes('Stock market')), false);
@@ -232,15 +239,17 @@ test('POST /api/lil/search grounds answers in Wikipedia and Serper results; ball
     // The balloon's text is NOT in the prompt — it never grounds the answer.
     assert.doesNotMatch(aiOptions.messages[0].content, /Giant pandas eat bamboo all day/);
     assert.match(aiOptions.messages[0].content, /Pandas are bears\./);
+    assert.match(aiOptions.messages[0].content, /Ceramic panda facts\./);
     // Headers prove the key and the User-Agent were actually sent.
     assert.match(seenHeaders.wikipedia['User-Agent'], /littlables-lil/);
     assert.equal(seenHeaders.serper['X-API-KEY'], 'serper-test-key');
     // The audit log is metadata only.
     assert.equal(searchLogBody.user_id, 'admin-user');
-    assert.deepEqual(searchLogBody.layers, ['wikipedia', 'serper']);
+    assert.deepEqual(searchLogBody.layers, ['wikipedia', 'ceramic', 'serper']);
     assert.equal(searchLogBody.balloons_count, 1);
+    assert.equal(searchLogBody.ceramic_count, 1);
     assert.equal(searchLogBody.flagged_filtered, 1);
-    assert.equal(searchLogBody.result_urls.length, 4);
+    assert.equal(searchLogBody.result_urls.length, 5);
     assert.equal(searchLogBody.status, 'ok');
     const logText = JSON.stringify(searchLogBody);
     assert.doesNotMatch(logText, /"title"/);

@@ -9,11 +9,22 @@
  *      CC BY-SA, so extracts may be kept and re-served with attribution
  *      (the source link is the attribution); a descriptive User-Agent is
  *      mandatory. No key needed.
- *   2. Serper — live Google results, only when Wikipedia is thin
- *      (< 3 sources). Needs `SERPER_API_KEY` as a Worker secret; when
- *      it is absent the layer is skipped, never an error. Serper results
- *      are live-only in this experiment: no Serper title/snippet is stored
- *      anywhere (see `logLilSearch`).
+ *   2. Ceramic — live web search through Cloudflare's Web Search API
+ *      (`env.AI.websearch`, gateway `littlables-lil`, provider
+ *      `ceramic`, BYOK alias `default` — Katie's own Ceramic key, stored
+ *      on the gateway; the key itself never travels in the request).
+ *      Runs when Wikipedia leaves the grounding thin, and gets the
+ *      question's content keywords, not the full sentence — Ceramic is
+ *      an exact-match engine, so a conversational question searches
+ *      worse than keywords. Live-only, like Serper: Ceramic's own terms
+ *      (§7) ban storing or re-serving results, so descriptions are
+ *      trimmed to 300 chars, the flagged filter applies, grounding text
+ *      goes into the prompt only, and the log stays metadata-only.
+ *   3. Serper — live Google results, only when Wikipedia + Ceramic are
+ *      still thin (< 3 sources). Needs `SERPER_API_KEY` as a Worker
+ *      secret; when it is absent the layer is skipped, never an error.
+ *      Serper results are live-only in this experiment: no Serper
+ *      title/snippet is stored anywhere (see `logLilSearch`).
  *
  * Balloons ride along separately (2026-11-05, Katie: back burner — not
  * enough tagged content yet to ground answers): the site's own APPROVED
@@ -43,11 +54,22 @@ export const LIL_WIKIPEDIA_USER_AGENT =
 export const LIL_SEARCH_MAX_SOURCES = 6;
 export const LIL_SEARCH_BALLOON_LIMIT = 5;
 export const LIL_SEARCH_WIKIPEDIA_LIMIT = 3;
+export const LIL_SEARCH_CERAMIC_LIMIT = 5;
 export const LIL_SEARCH_SERPER_LIMIT = 5;
 export const LIL_SERPER_TIMEOUT_MS = 10_000;
+// Cloudflare Web Search API via the Workers AI binding (docs:
+// developers.cloudflare.com/web-search/how-to-use — verified 2026-11-05).
+// The gateway holds Katie's Ceramic key (built-in `ceramic` slot, alias
+// `default`); the binding call names the gateway and alias, the key itself
+// never travels in the request. A missing provider/alias fails with 400
+// instead of falling back to AI Gateway credits.
+export const LIL_CERAMIC_GATEWAY_ID = 'littlables-lil';
+export const LIL_CERAMIC_PROVIDER = 'ceramic';
+export const LIL_CERAMIC_BYOK_ALIAS = 'default';
 export const LIL_SEARCH_TEXT_LIMITS = Object.freeze({
   balloon: 300,
   wikipedia: 500,
+  ceramic: 300,
   serper: 300
 });
 
@@ -249,6 +271,62 @@ export async function searchSerper(env, query, { limit = LIL_SEARCH_SERPER_LIMIT
   }
 }
 
+/**
+ * One Ceramic search through Cloudflare's Web Search API. Returns
+ * `{ results, error }` where results are `{ title, url, snippet, domain }`.
+ *
+ * The call goes through the Workers AI binding — `env.AI.websearch` with
+ * the gateway ID, provider `ceramic`, and the BYOK alias `default` — and
+ * returns a standard `Response` whose JSON is
+ * `{ items: [{ url, title, description, ... }], metadata }` (Cloudflare
+ * docs, verified 2026-11-05). The caller passes the question's content
+ * keywords as the query (Ceramic is an exact-match engine; a full
+ * conversational question searches worse than keywords).
+ *
+ * Never throws; any failure yields `{ results: [], error }`:
+ * - no `env.AI.websearch` binding (older compatibility date, or a test env
+ *   without the method) → `'unavailable'`
+ * - non-OK response (a missing provider/alias fails with 400) →
+ *   `http-<status>`
+ * - malformed body → `'bad-response'`, thrown call → `'fetch-failed'`.
+ * Ceramic descriptions can run to 8,000 chars, so they are trimmed to the
+ * same 300 as Serper's before the model ever sees them.
+ */
+export async function searchCeramic(env, query, { limit = LIL_SEARCH_CERAMIC_LIMIT } = {}) {
+  if (typeof env?.AI?.websearch !== 'function') {
+    return { results: [], error: 'unavailable' };
+  }
+  try {
+    const response = await env.AI.websearch({
+      gatewayId: LIL_CERAMIC_GATEWAY_ID,
+      query,
+      provider: LIL_CERAMIC_PROVIDER,
+      byokAlias: LIL_CERAMIC_BYOK_ALIAS,
+      limit
+    });
+    if (!response || response.ok === false) {
+      return { results: [], error: `http-${response?.status || 'unknown'}` };
+    }
+    const data = await response.json().catch(() => null);
+    const items = data?.items;
+    if (!Array.isArray(items)) return { results: [], error: 'bad-response' };
+    const results = [];
+    for (const item of items) {
+      if (!item || typeof item.title !== 'string' || !item.title ||
+          typeof item.url !== 'string' || !item.url) continue;
+      results.push({
+        title: item.title,
+        url: item.url,
+        snippet: trimText(item.description || '', LIL_SEARCH_TEXT_LIMITS.ceramic),
+        domain: domainOf(item.url)
+      });
+    }
+    return { results, error: null };
+  } catch {
+    return { results: [], error: 'fetch-failed' };
+  }
+}
+
 function balloonToSource(row) {
   // searchNewsStories returns normalized stories: article_url is `link`,
   // ai_summary is `aiSummary`, source_name is `source`. Accept the raw
@@ -335,14 +413,14 @@ export async function searchApprovedBalloons(env, query, {
 }
 
 /**
- * Run the grounding layers (Wikipedia, then Serper when thin) and gather
- * balloons separately.
+ * Run the grounding layers (Wikipedia, then Ceramic when thin, then Serper
+ * when still thin) and gather balloons separately.
  *
  * Returns:
  * - `sources`: public grounding sources, `{ title, url, domain }`,
- *   Wikipedia + Serper only, capped at `LIL_SEARCH_MAX_SOURCES`. These
- *   are the sources the answer is grounded in — and the only ones shown
- *   in the Sources section.
+ *   Wikipedia + Ceramic + Serper only, capped at
+ *   `LIL_SEARCH_MAX_SOURCES`. These are the sources the answer is
+ *   grounded in — and the only ones shown in the Sources section.
  * - `balloons`: the site's own approved stories, `{ title, url, domain }`,
  *   up to `LIL_SEARCH_BALLOON_LIMIT`, keyword-matched and
  *   classification-screened like before — but NEVER in `grounding`, so
@@ -353,9 +431,11 @@ export async function searchApprovedBalloons(env, query, {
  * - `layersUsed`: grounding layers that contributed at least one source
  *   (balloons are not a grounding layer, so they are never listed).
  * - `searchQueries`: the web searches actually executed, as
- *   `"Wikipedia: <query>"` / `"Serper: <query>"` pills (balloons are the
- *   site's own content, not a web search, so they are not listed).
- * - `counts`: `{ balloons, wikipedia, serper, flaggedFiltered }`.
+ *   `"Wikipedia: <query>"` / `"Ceramic: <keywords>"` /
+ *   `"Serper: <query>"` pills (balloons are the site's own content, not a
+ *   web search, so they are not listed). Ceramic gets the content
+ *   keywords, not the full question — it is an exact-match engine.
+ * - `counts`: `{ balloons, wikipedia, ceramic, serper, flaggedFiltered }`.
  * - `layerErrors`: `{ <layer>: <error> }` for layers that failed.
  * - `serperSkipped`: `'no-key'` when Serper was skipped for want of a key,
  *   else null.
@@ -366,12 +446,13 @@ export async function searchApprovedBalloons(env, query, {
 export async function searchLilWebSources(env, query, {
   balloonLimit = LIL_SEARCH_BALLOON_LIMIT,
   wikipediaLimit = LIL_SEARCH_WIKIPEDIA_LIMIT,
+  ceramicLimit = LIL_SEARCH_CERAMIC_LIMIT,
   serperLimit = LIL_SEARCH_SERPER_LIMIT
 } = {}) {
   const startedAt = Date.now();
   const merged = [];
   const balloonList = [];
-  const counts = { balloons: 0, wikipedia: 0, serper: 0, flaggedFiltered: 0 };
+  const counts = { balloons: 0, wikipedia: 0, ceramic: 0, serper: 0, flaggedFiltered: 0 };
   const layerErrors = {};
   const layersUsed = [];
   const searchQueries = [];
@@ -423,7 +504,28 @@ export async function searchLilWebSources(env, query, {
     }
   }
 
-  // 2. Serper is the live fallback, only when the grounding is still thin.
+  // 2. Ceramic is the live fallback, only when the grounding is still
+  // thin — and it gets the content keywords, not the full question,
+  // because it is an exact-match engine. No keywords survive the
+  // stopword strip (e.g. "What is it?") → skip it silently.
+  if (merged.length < 3) {
+    const ceramicQuery = extractSearchKeywords(query).join(' ');
+    if (ceramicQuery) {
+      const ceramic = await searchCeramic(env, ceramicQuery, { limit: ceramicLimit });
+      if (ceramic.error) {
+        layerErrors.ceramic = ceramic.error;
+      } else {
+        // The search ran, even if it found nothing — list it, like
+        // Wikipedia; a failed call is not listed.
+        searchQueries.push(`Ceramic: ${ceramicQuery}`);
+        counts.ceramic = takeInto(merged, ceramic.results.map((r) => ({ ...r, layer: 'ceramic' })), LIL_SEARCH_MAX_SOURCES);
+        if (counts.ceramic > 0) layersUsed.push('ceramic');
+      }
+    }
+  }
+
+  // 3. Serper is the last live fallback, only when the grounding is
+  // still thin.
   if (merged.length < 3) {
     const serper = await searchSerper(env, query, { limit: serperLimit });
     if (serper.skipped) {
@@ -480,6 +582,7 @@ export async function logLilSearch(env, {
         layers: Array.isArray(layersUsed) ? layersUsed : [],
         balloons_count: counts.balloons || 0,
         wikipedia_count: counts.wikipedia || 0,
+        ceramic_count: counts.ceramic || 0,
         serper_count: counts.serper || 0,
         flagged_filtered: counts.flaggedFiltered || 0,
         result_urls: Array.isArray(resultUrls) ? resultUrls : [],

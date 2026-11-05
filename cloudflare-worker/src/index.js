@@ -3971,8 +3971,9 @@ export default {
         const recallQuery = isChatRequest ? messages[messages.length - 1].content : query;
         const memoryBlock = await getLilMemoryBlock(env, auth.userId, recallQuery);
         if (memoryBlock) systemPrompt += `\n\n${memoryBlock}`;
-        // Web-search layers (Wikipedia → Serper ground the answer;
-        // balloons ride along in their own section and never ground it).
+        // Web-search layers (Wikipedia → Ceramic → Serper ground the
+        // answer; balloons ride along in their own section and never
+        // ground it).
         // Search mode only: chat, code, and games stay model-only. Every
         // layer fails open, so a provider outage degrades to fewer sources,
         // never to a lost answer. The grounding text goes into the prompt
@@ -4067,7 +4068,7 @@ export default {
         if (isChatRequest) {
           return jsonResponse({ reply: answer, answer, provider: 'workers-ai', model: LIL_WORKERS_AI_MODEL });
         }
-        const sourceLabels = { wikipedia: 'Wikipedia', serper: 'live web results' };
+        const sourceLabels = { wikipedia: 'Wikipedia', ceramic: 'Ceramic', serper: 'live web results' };
         const checkedLayers = (webSources?.layersUsed || []).map((l) => sourceLabels[l] || l);
         const checkedList = checkedLayers.length <= 1
           ? checkedLayers.join('')

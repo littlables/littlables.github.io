@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   searchWikipedia,
+  searchCeramic,
   searchSerper,
   searchApprovedBalloons,
   searchLilWebSources,
@@ -19,6 +20,20 @@ const ENV = {
   SUPABASE_SECRET_KEY: 'service-secret',
   SERPER_API_KEY: 'serper-test-key'
 };
+
+// ENV plus a mocked Workers AI websearch binding returning the given items,
+// shaped like the real binding response (`{ items, metadata }`).
+function ceramicEnv(items) {
+  return {
+    ...ENV,
+    AI: {
+      websearch: async () => Response.json({
+        items,
+        metadata: { query: 'mock', requestId: 'req-mock', latencyMs: 12 }
+      })
+    }
+  };
+}
 
 function balloonRow(overrides = {}) {
   return {
@@ -237,16 +252,17 @@ test('searchLilWebSources keeps balloons out of grounding; Wikipedia and Serper 
     throw new Error(`Unexpected fetch: ${url.href}`);
   };
   try {
-    const result = await searchLilWebSources(ENV, 'pandas');
-    // Grounding is Wikipedia + Serper only — the balloon is separate.
+    const result = await searchLilWebSources(ceramicEnv([]), 'pandas');
+    // Grounding is Wikipedia + Serper only — the balloon is separate, and
+    // Ceramic ran (empty) between them.
     assert.equal(result.sources.length, 3);
     assert.equal(result.sources[0].title, 'Panda');
     assert.equal(result.sources[1].title, 'Panda facts');
     assert.equal(result.sources[2].title, 'More pandas');
     assert.deepEqual(result.balloons.map((b) => b.title), ['Giant pandas eat bamboo all day']);
     assert.deepEqual(result.layersUsed, ['wikipedia', 'serper']);
-    assert.deepEqual(result.searchQueries, ['Wikipedia: pandas', 'Serper: pandas']);
-    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 1, serper: 2, flaggedFiltered: 1 });
+    assert.deepEqual(result.searchQueries, ['Wikipedia: pandas', 'Ceramic: pandas', 'Serper: pandas']);
+    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 1, ceramic: 0, serper: 2, flaggedFiltered: 1 });
     assert.deepEqual(result.layerErrors, {});
     assert.equal(result.serperSkipped, null);
     assert.equal(typeof result.latencyMs, 'number');
@@ -289,14 +305,15 @@ test('searchLilWebSources still runs Wikipedia and Serper when balloons are plen
     throw new Error(`Unexpected fetch: ${url.href}`);
   };
   try {
-    const result = await searchLilWebSources(ENV, 'pandas');
+    const result = await searchLilWebSources(ceramicEnv([]), 'pandas');
     // Four balloons ride along, but the web layers run anyway — balloons
-    // no longer count toward the "thin" threshold.
+    // no longer count toward the "thin" threshold. Ceramic ran (empty)
+    // between Wikipedia and Serper.
     assert.equal(result.balloons.length, 4);
     assert.equal(result.sources.length, 2);
     assert.equal(result.sources[0].title, 'Panda');
     assert.deepEqual(result.layersUsed, ['wikipedia', 'serper']);
-    assert.deepEqual(result.searchQueries, ['Wikipedia: pandas', 'Serper: pandas']);
+    assert.deepEqual(result.searchQueries, ['Wikipedia: pandas', 'Ceramic: pandas', 'Serper: pandas']);
     assert.deepEqual(calledHosts, ['supabase.example', 'en.wikipedia.org', 'google.serper.dev']);
   } finally {
     globalThis.fetch = originalFetch;
@@ -311,11 +328,12 @@ test('searchLilWebSources fails open when every layer fails', async () => {
     assert.deepEqual(result.sources, []);
     assert.deepEqual(result.balloons, []);
     assert.deepEqual(result.grounding, []);
-    assert.deepEqual(result.counts, { balloons: 0, wikipedia: 0, serper: 0, flaggedFiltered: 0 });
+    assert.deepEqual(result.counts, { balloons: 0, wikipedia: 0, ceramic: 0, serper: 0, flaggedFiltered: 0 });
     // Unlike the old searchNewsStories path (which swallowed its own
     // failures), searchApprovedBalloons reports its error, so both failed
-    // layers show up here.
-    assert.deepEqual(result.layerErrors, { balloons: 'fetch-failed', wikipedia: 'fetch-failed' });
+    // layers show up here — plus Ceramic, whose binding is missing from
+    // this env entirely.
+    assert.deepEqual(result.layerErrors, { balloons: 'fetch-failed', wikipedia: 'fetch-failed', ceramic: 'unavailable' });
     assert.equal(result.serperSkipped, 'no-key');
   } finally {
     globalThis.fetch = originalFetch;
@@ -461,21 +479,27 @@ test('searchLilWebSources JWST regression: Wikipedia grounds, space balloons rid
     throw new Error(`Unexpected fetch: ${url.href}`);
   };
   try {
-    const result = await searchLilWebSources(ENV, 'What new space discoveries happened recently from the James Webb telescope?');
-    // Grounding is the Wikipedia article only — the two approved space
-    // balloons are shown separately, never in the answer's sources.
-    assert.equal(result.sources.length, 1);
+    const result = await searchLilWebSources(ceramicEnv([
+      { title: 'James Webb telescope spots water vapor', url: 'https://example.com/ceramic-webb', description: 'Webb found water vapor on a distant world.' }
+    ]), 'What new space discoveries happened recently from the James Webb telescope?');
+    // Grounding is the Wikipedia article plus the Ceramic result — the two
+    // approved space balloons are shown separately, never in the answer's
+    // sources. Serper still ran (grounding was 2 after Ceramic) but found
+    // nothing.
+    assert.equal(result.sources.length, 2);
     assert.equal(result.sources[0].title, 'James Webb Space Telescope');
+    assert.equal(result.sources[1].title, 'James Webb telescope spots water vapor');
     assert.deepEqual(result.balloons.map((b) => b.title), [
       'James Webb telescope finds water vapor on a distant planet',
       'New images from the James Webb telescope'
     ]);
-    assert.deepEqual(result.layersUsed, ['wikipedia']);
+    assert.deepEqual(result.layersUsed, ['wikipedia', 'ceramic']);
     assert.deepEqual(result.searchQueries, [
       'Wikipedia: What new space discoveries happened recently from the James Webb telescope?',
+      'Ceramic: space discoveries james webb telescope',
       'Serper: What new space discoveries happened recently from the James Webb telescope?'
     ]);
-    assert.deepEqual(result.counts, { balloons: 2, wikipedia: 1, serper: 0, flaggedFiltered: 2 });
+    assert.deepEqual(result.counts, { balloons: 2, wikipedia: 1, ceramic: 1, serper: 0, flaggedFiltered: 2 });
     assert.equal(result.sources.some((s) => /Zelensky|killed|bear attack/i.test(s.title)), false);
     assert.equal(result.balloons.some((s) => /Zelensky|killed|bear attack/i.test(s.title)), false);
     assert.deepEqual(calledHosts, ['supabase.example', 'en.wikipedia.org', 'google.serper.dev']);
@@ -499,19 +523,76 @@ test('searchLilWebSources balloons never ground the answer when the web layers f
   try {
     // No Serper key: the layer is skipped, so the web layers contribute
     // nothing — the balloon is still shown, but the answer has no sources
-    // to ground in, and the handler's refusal line applies.
+    // to ground in, and the handler's refusal line applies. Ceramic is
+    // attempted (the query has keywords) but this env has no websearch
+    // binding, so it reports 'unavailable' instead of throwing.
     const result = await searchLilWebSources({ SUPABASE_URL: ENV.SUPABASE_URL, SUPABASE_SECRET_KEY: 'service-secret' }, 'pandas');
     assert.deepEqual(result.sources, []);
     assert.deepEqual(result.grounding, []);
     assert.deepEqual(result.balloons.map((b) => b.title), ['Giant pandas eat bamboo all day']);
     assert.deepEqual(result.layersUsed, []);
     assert.deepEqual(result.searchQueries, ['Wikipedia: pandas']);
-    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 0, serper: 0, flaggedFiltered: 0 });
-    assert.deepEqual(result.layerErrors, {});
+    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 0, ceramic: 0, serper: 0, flaggedFiltered: 0 });
+    assert.deepEqual(result.layerErrors, { ceramic: 'unavailable' });
     assert.equal(result.serperSkipped, 'no-key');
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('searchCeramic calls the binding with gateway, provider and alias, and trims long descriptions', async () => {
+  let seenArgs;
+  const env = {
+    ...ENV,
+    AI: {
+      websearch: async (args) => {
+        seenArgs = args;
+        return Response.json({
+          items: [
+            { title: 'Panda facts', url: 'https://kids.example.com/pandas', description: 'Fun panda facts.' },
+            { title: 'Long read', url: 'https://example.org/pandas', description: 'x'.repeat(5000) },
+            { title: '', url: 'https://example.org/empty', description: 'No title, dropped.' },
+            { title: 'No URL', url: '', description: 'No URL, dropped.' }
+          ],
+          metadata: { query: 'pandas', requestId: 'req-1', latencyMs: 42 }
+        });
+      }
+    }
+  };
+  const { results, error } = await searchCeramic(env, 'pandas');
+  assert.equal(error, null);
+  assert.deepEqual(seenArgs, {
+    gatewayId: 'littlables-lil',
+    query: 'pandas',
+    provider: 'ceramic',
+    byokAlias: 'default',
+    limit: 5
+  });
+  assert.equal(results.length, 2);
+  assert.equal(results[0].title, 'Panda facts');
+  assert.equal(results[0].snippet, 'Fun panda facts.');
+  assert.equal(results[0].domain, 'kids.example.com');
+  // Ceramic descriptions can run to 8,000 chars — trimmed to 300 like Serper's.
+  assert.equal(results[1].snippet.length, 301);
+  assert.ok(results[1].snippet.endsWith('…'));
+});
+
+test('searchCeramic fails open when the binding is missing or the call fails', async () => {
+  assert.deepEqual(await searchCeramic({}, 'pandas'), { results: [], error: 'unavailable' });
+  assert.deepEqual(await searchCeramic({ AI: {} }, 'pandas'), { results: [], error: 'unavailable' });
+  assert.deepEqual(
+    await searchCeramic({ AI: { websearch: async () => { throw new Error('down'); } } }, 'pandas'),
+    { results: [], error: 'fetch-failed' }
+  );
+  // A missing provider/alias fails with 400 instead of falling back to credits.
+  assert.deepEqual(
+    await searchCeramic({ AI: { websearch: async () => new Response('nope', { status: 400 }) } }, 'pandas'),
+    { results: [], error: 'http-400' }
+  );
+  assert.deepEqual(
+    await searchCeramic({ AI: { websearch: async () => Response.json({ notItems: true }) } }, 'pandas'),
+    { results: [], error: 'bad-response' }
+  );
 });
 
 test('logLilSearch stores metadata only — never a title, description, or snippet', async () => {
@@ -541,6 +622,7 @@ test('logLilSearch stores metadata only — never a title, description, or snipp
     assert.equal(seenBody.query, 'pandas');
     assert.deepEqual(seenBody.layers, ['balloons', 'wikipedia']);
     assert.equal(seenBody.balloons_count, 1);
+    assert.equal(seenBody.ceramic_count, 0);
     assert.equal(seenBody.flagged_filtered, 1);
     assert.deepEqual(seenBody.result_urls, ['https://example.com/pandas', 'https://en.wikipedia.org/wiki/Panda']);
     // The payload must carry no result text at all.
