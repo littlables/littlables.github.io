@@ -31,10 +31,19 @@ interface LilChatMessage {
   content: string;
 }
 
-interface LilChatConversation {
+interface LilChatSession {
   id: string;
   title: string;
-  messages: LilChatMessage[];
+  updatedAt: number;
+}
+
+// Shape the Worker actually returns for GET /api/lil/transcripts/sessions.
+// It uses session_id, not id — the previous filter checked session.id and
+// dropped every session. Map session_id to id when reading, so the rest
+// of the page (which uses session.id) stays unchanged.
+interface LilChatSessionRow {
+  session_id: string;
+  title: string;
   updatedAt: number;
 }
 
@@ -43,7 +52,6 @@ type LilChatMode = 'chat' | 'code';
 type LilModelSection = 'search' | 'chat' | 'code' | 'games';
 type LilGameType = 'trivia' | 'memory' | WorksheetType;
 
-const LIL_CHAT_HISTORY_KEY = 'littlables_lil_chat_history';
 const MAX_SAVED_CHATS = 30;
 
 interface LilModel {
@@ -128,7 +136,108 @@ const LIL_CHAT_URL = import.meta.env.DEV
 const LIL_MODELS_URL = import.meta.env.DEV
   ? '/api/lil/models'
   : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/models`;
+const LIL_MUSE_QUEUE_URL = import.meta.env.DEV
+  ? '/api/lil/muse-queue'
+  : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/muse-queue`;
+const LIL_TRANSCRIPTS_URL = import.meta.env.DEV
+  ? '/api/lil/transcripts'
+  : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/transcripts`;
+const LIL_TRANSCRIPTS_SESSIONS_URL = import.meta.env.DEV
+  ? '/api/lil/transcripts/sessions'
+  : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/transcripts/sessions`;
+const LIL_MUSE_QUEUE_BY_SESSION_URL = import.meta.env.DEV
+  ? '/api/lil/muse-queue/by-session'
+  : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/muse-queue/by-session`;
 const LIL_MODEL_PREFERENCES_KEY = 'littlables_lil_models';
+// Muse is a chat-only model: it appears in the chat dropdown and nowhere
+// else, and the Worker rejects model=muse for any other mode, so a
+// crafted request cannot route code/games/search work to Muse either.
+const LIL_MUSE_MODEL_ID = 'muse';
+const LIL_MUSE_POLL_MS = 3000;
+const LIL_MUSE_POLL_TIMEOUT_MS = 300_000;
+
+async function lilAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  const client = getSupabaseClient();
+  if (client) {
+    const { data: { session } } = await client.auth.getSession();
+    if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+  }
+  return headers;
+}
+
+// Thrown when a Muse queue poll times out. The prompt is still queued
+// on the Worker, so the caller keeps the queue id and offers a
+// "Check for Muse's reply" retry instead of resubmitting the prompt
+// and creating a duplicate queue row.
+class MuseQueuePendingError extends Error {
+  queueId: string;
+  constructor(queueId: string) {
+    super('Muse has not replied yet. Your prompt is still queued.');
+    this.queueId = queueId;
+  }
+}
+
+async function pollMuseQueueForReply(queueId: string): Promise<string> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < LIL_MUSE_POLL_TIMEOUT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, LIL_MUSE_POLL_MS));
+    const response = await fetch(`${LIL_MUSE_QUEUE_URL}?id=${encodeURIComponent(queueId)}`, {
+      headers: await lilAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not check for Muse's reply (${response.status}).`);
+    if (data.status === 'done') {
+      if (typeof data.reply !== 'string' || !data.reply.trim()) throw new Error('Muse returned an empty reply.');
+      return data.reply.trim();
+    }
+    if (data.status === 'error') {
+      throw new Error(typeof data.error === 'string' && data.error.trim() ? data.error : 'Muse could not reply to that prompt.');
+    }
+    // status pending: keep polling until the timeout above.
+  }
+  throw new MuseQueuePendingError(queueId);
+}
+
+async function fetchLilChatSessions(): Promise<LilChatSession[]> {
+  const response = await fetch(LIL_TRANSCRIPTS_SESSIONS_URL, { headers: await lilAuthHeaders() });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Could not load lil chats (${response.status}).`);
+  if (!Array.isArray(data.sessions)) return [];
+  return data.sessions
+    .filter((session: unknown): session is LilChatSessionRow =>
+      !!session && typeof session === 'object' &&
+      typeof (session as LilChatSessionRow).session_id === 'string' &&
+      typeof (session as LilChatSessionRow).title === 'string' &&
+      Number.isFinite((session as LilChatSessionRow).updatedAt))
+    .map((row: LilChatSessionRow): LilChatSession => ({
+      id: row.session_id,
+      title: row.title,
+      updatedAt: row.updatedAt,
+    }))
+    .slice(0, MAX_SAVED_CHATS);
+}
+
+async function fetchLilChatMessages(sessionId: string): Promise<LilChatMessage[]> {
+  const response = await fetch(`${LIL_TRANSCRIPTS_URL}?session_id=${encodeURIComponent(sessionId)}`, { headers: await lilAuthHeaders() });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Could not load lil chat (${response.status}).`);
+  if (!Array.isArray(data.messages)) return [];
+  return data.messages
+    .filter((message: unknown): message is LilChatMessage =>
+      !!message && typeof message === 'object' &&
+      ['user', 'assistant'].includes((message as LilChatMessage).role) &&
+      typeof (message as LilChatMessage).content === 'string')
+    .map((message: LilChatMessage) => ({ role: message.role, content: message.content }));
+}
+
+async function fetchPendingMuseQueueId(sessionId: string): Promise<string | null> {
+  const response = await fetch(`${LIL_MUSE_QUEUE_BY_SESSION_URL}?session_id=${encodeURIComponent(sessionId)}`, { headers: await lilAuthHeaders() });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return null;
+  const pending = Array.isArray(data.pending) ? data.pending : [];
+  return typeof pending[0]?.queue_id === 'string' ? pending[0].queue_id : null;
+}
 
 async function requestLilChat(messages: LilChatMessage[], sessionId: string, mode: LilChatMode, model: string) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -189,29 +298,16 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
   });
   const [copied, setCopied] = useState(false);
   const [chatMessages, setChatMessages] = useState<LilChatMessage[]>([]);
-  const [chatHistory, setChatHistory] = useState<LilChatConversation[]>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(LIL_CHAT_HISTORY_KEY) || '[]');
-      if (!Array.isArray(saved)) return [];
-      return saved
-        .filter((item): item is LilChatConversation =>
-          !!item && typeof item.id === 'string' && typeof item.title === 'string' &&
-          Array.isArray(item.messages) && Number.isFinite(item.updatedAt) &&
-          item.messages.every((message: unknown) =>
-            !!message && typeof message === 'object' &&
-            ['user', 'assistant'].includes((message as LilChatMessage).role) &&
-            typeof (message as LilChatMessage).content === 'string'))
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, MAX_SAVED_CHATS);
-    } catch {
-      return [];
-    }
-  });
+  const [chatSessions, setChatSessions] = useState<LilChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [chatHistoryDragging, setChatHistoryDragging] = useState(false);
   const [chatDraft, setChatDraft] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  // A Muse queue id whose reply has not arrived yet (poll timed out).
+  // Kept so the user can check again for the same reply instead of
+  // resubmitting and creating a duplicate queue row.
+  const [pendingMuseQueueId, setPendingMuseQueueId] = useState<string | null>(null);
   const [codePrompt, setCodePrompt] = useState('');
   const [lilModels, setLilModels] = useState<LilModel[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -303,26 +399,39 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     } catch {}
   }, [searchHistory]);
 
-  useEffect(() => {
+  // Chat history lives on the server now, not in the browser cache:
+  // this loads the server sessions only. There is deliberately no
+  // browser-cache migration and no browser fallback — old browser
+  // chats simply do not carry over, and the server log starts fresh.
+  // A failed load leaves the sidebar empty until the next open.
+  const loadServerChatSessions = async () => {
     try {
-      localStorage.setItem(LIL_CHAT_HISTORY_KEY, JSON.stringify(chatHistory));
-    } catch {}
-  }, [chatHistory]);
+      setChatSessions(await fetchLilChatSessions());
+    } catch {
+      setChatSessions([]);
+    }
+  };
+
+  useEffect(() => {
+    void loadServerChatSessions();
+  }, []);
 
   const saveChatConversation = (id: string, messages: LilChatMessage[]) => {
+    // Local state only: the server is the store (the Worker logs
+    // Workers AI turns, the muse-queue reply route logs Muse turns).
+    // Nothing here writes chat history back to localStorage.
     if (messages.length === 0) {
-      setChatHistory((current) => current.filter((conversation) => conversation.id !== id));
+      setChatSessions((current) => current.filter((session) => session.id !== id));
       return;
     }
     const firstUserMessage = messages.find((message) => message.role === 'user')?.content || 'New chat';
-    const conversation: LilChatConversation = {
+    const session: LilChatSession = {
       id,
       title: firstUserMessage.length > 56 ? `${firstUserMessage.slice(0, 53).trimEnd()}…` : firstUserMessage,
-      messages,
       updatedAt: Date.now(),
     };
-    setChatHistory((current) => [
-      conversation,
+    setChatSessions((current) => [
+      session,
       ...current.filter((item) => item.id !== id),
     ].slice(0, MAX_SAVED_CHATS));
   };
@@ -334,15 +443,30 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     setChatMessages([]);
     setChatDraft('');
     setChatError(null);
+    setPendingMuseQueueId(null);
   };
 
-  const openChatConversation = (conversation: LilChatConversation) => {
+  const openChatConversation = async (session: LilChatSession) => {
     if (chatLoading) return;
-    setActiveChatId(conversation.id);
-    sessionIdRef.current = conversation.id;
-    setChatMessages(conversation.messages);
+    setActiveChatId(session.id);
+    sessionIdRef.current = session.id;
     setChatDraft('');
     setChatError(null);
+    setPendingMuseQueueId(null);
+    try {
+      const messages = await fetchLilChatMessages(session.id);
+      setChatMessages(messages);
+      // Restore a still-pending Muse reply for this conversation, so
+      // a reload no longer strands the Check button.
+      const pendingQueueId = await fetchPendingMuseQueueId(session.id);
+      if (pendingQueueId) {
+        setPendingMuseQueueId(pendingQueueId);
+        setChatError('Muse has not replied yet. Your prompt is still queued.');
+      }
+    } catch {
+      setChatMessages([]);
+      setChatError('Could not load that lil chat from the server. Please try again.');
+    }
   };
 
   const loadLilModels = async () => {
@@ -367,7 +491,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
           typeof (model as { id?: unknown }).id === 'string' &&
           typeof (model as { name?: unknown }).name === 'string')
         : [];
-      if (models.length === 0) throw new Error('Open WebUI did not return any available models.');
+      if (models.length === 0) throw new Error('Lil did not return any available models.');
 
       setLilModels(models);
       setSelectedModels((current) => {
@@ -376,10 +500,10 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
           ? data.defaultModel
           : models[0].id;
         const next = {
-          search: availableIds.has(current.search) ? current.search : defaultModel,
+          search: availableIds.has(current.search) && current.search !== LIL_MUSE_MODEL_ID ? current.search : defaultModel,
           chat: availableIds.has(current.chat) ? current.chat : defaultModel,
-          code: availableIds.has(current.code) ? current.code : defaultModel,
-          games: availableIds.has(current.games) ? current.games : defaultModel,
+          code: availableIds.has(current.code) && current.code !== LIL_MUSE_MODEL_ID ? current.code : defaultModel,
+          games: availableIds.has(current.games) && current.games !== LIL_MUSE_MODEL_ID ? current.games : defaultModel,
         };
         try {
           localStorage.setItem(LIL_MODEL_PREFERENCES_KEY, JSON.stringify(next));
@@ -387,7 +511,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
         return next;
       });
     } catch (error) {
-      setModelsError(error instanceof Error ? error.message : 'Could not load Open WebUI models.');
+      setModelsError(error instanceof Error ? error.message : 'Could not load Lil models.');
     } finally {
       setModelsLoading(false);
     }
@@ -407,18 +531,25 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     });
   };
 
-  const renderLilModelSelect = (section: LilModelSection) => (
+  const renderLilModelSelect = (section: LilModelSection) => {
+    // Muse is chat-only: every other section's dropdown hides it, and
+    // the Worker rejects model=muse outside chat, so the UI filter is
+    // a convenience, not the security gate.
+    const visibleModels = section === 'chat'
+      ? lilModels
+      : lilModels.filter((model) => model.id !== LIL_MUSE_MODEL_ID);
+    return (
     <div className="lil-model-control">
       <label htmlFor={`lil-model-${section}`}>Model</label>
       <select
         id={`lil-model-${section}`}
         value={selectedModels[section]}
         onChange={(event) => selectLilModel(section, event.target.value)}
-        disabled={modelsLoading || lilModels.length === 0}
+        disabled={modelsLoading || visibleModels.length === 0}
       >
         {modelsLoading && <option value="">Loading models…</option>}
-        {!modelsLoading && lilModels.length === 0 && <option value="">Models unavailable</option>}
-        {lilModels.map((model) => (
+        {!modelsLoading && visibleModels.length === 0 && <option value="">Models unavailable</option>}
+        {visibleModels.map((model) => (
           <option key={model.id} value={model.id}>{model.name}</option>
         ))}
       </select>
@@ -429,7 +560,8 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
         </span>
       )}
     </div>
-  );
+    );
+  };
 
   useEffect(() => {
     if (activeView !== 'admin' || isLocalHost || !isAdmin) return;
@@ -551,18 +683,68 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     setChatMessages(nextMessages);
     setChatDraft('');
     setChatError(null);
+    setPendingMuseQueueId(null);
     setChatLoading(true);
     try {
-      const answer = await requestLilChat(requestMessages, sessionIdRef.current, 'chat', selectedModels.chat);
+      let answer: string;
+      if (selectedModels.chat === LIL_MUSE_MODEL_ID) {
+        // Muse path: POST queues the prompt, then poll for the reply.
+        // requestLilChat cannot return a queued reply, so this path
+        // posts directly and polls here instead.
+        const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(await lilAuthHeaders()) };
+        const queueResponse = await fetch(LIL_CHAT_URL, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ messages: requestMessages, sessionId: sessionIdRef.current, mode: 'chat', model: LIL_MUSE_MODEL_ID }),
+        });
+        const queueData = await queueResponse.json().catch(() => ({}));
+        if (!queueResponse.ok) throw new Error(queueData.error || `Lil request failed with status ${queueResponse.status}`);
+        if (!queueData.queued || typeof queueData.queue_id !== 'string') {
+          throw new Error('Muse did not queue the prompt. Please try again.');
+        }
+        answer = await pollMuseQueueForReply(queueData.queue_id);
+      } else {
+        answer = await requestLilChat(requestMessages, sessionIdRef.current, 'chat', selectedModels.chat);
+      }
       const completedMessages = [...nextMessages, { role: 'assistant' as const, content: answer }];
       setChatMessages(completedMessages);
       saveChatConversation(conversationId, completedMessages);
     } catch (error) {
-      const previousMessages = nextMessages.slice(0, -1);
-      setChatMessages(previousMessages);
-      saveChatConversation(conversationId, previousMessages);
-      setChatDraft(text);
-      setChatError(error instanceof Error ? error.message : 'Lil could not reply. Please try again.');
+      if (error instanceof MuseQueuePendingError) {
+        // The prompt is still queued: keep the user's message in the
+        // chat (the reply may still arrive) and offer a re-check.
+        setPendingMuseQueueId(error.queueId);
+        setChatError(error.message);
+      } else {
+        const previousMessages = nextMessages.slice(0, -1);
+        setChatMessages(previousMessages);
+        saveChatConversation(conversationId, previousMessages);
+        setChatDraft(text);
+        setChatError(error instanceof Error ? error.message : 'Lil could not reply. Please try again.');
+      }
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const handleCheckMuseReply = async () => {
+    if (!pendingMuseQueueId || chatLoading) return;
+    const queueId = pendingMuseQueueId;
+    setChatError(null);
+    setChatLoading(true);
+    try {
+      const answer = await pollMuseQueueForReply(queueId);
+      const completedMessages = [...chatMessages, { role: 'assistant' as const, content: answer }];
+      setChatMessages(completedMessages);
+      if (activeChatId) saveChatConversation(activeChatId, completedMessages);
+      setPendingMuseQueueId(null);
+    } catch (error) {
+      if (error instanceof MuseQueuePendingError) {
+        setChatError(error.message);
+      } else {
+        setPendingMuseQueueId(null);
+        setChatError(error instanceof Error ? error.message : 'Could not check for Muse\'s reply. Please try again.');
+      }
     } finally {
       setChatLoading(false);
     }
@@ -963,8 +1145,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
       {/* Hero Header */}
       <header className="lil-hero-header">
         <div className="lil-avatar-wrap">
-          <span className="lil-avatar-emoji" role="img" aria-label="Lil Mascot">✨</span>
-          <span className="lil-avatar-sparkle">🔍</span>
+          <img className="lil-avatar-img" src="/img/lil-avatar.svg" alt="Lil Mascot" />
         </div>
         <h1 className="lil-hero-title">Meet Lil</h1>
         <p className="lil-hero-subtitle">
@@ -974,12 +1155,12 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
 
       <div className="lil-view-toggle" role="group" aria-label="Choose Lil view">
         {([
-          ['search', 'Search'],
-          ['chat', 'Chat'],
-          ['code', 'Code'],
-          ['games', 'Games'],
-          ['admin', 'Admin'],
-        ] as const).map(([view, label]) => (
+          ['search', 'Search', '🔭'],
+          ['chat', 'Chat', '💌'],
+          ['code', 'Code', '🧩'],
+          ['games', 'Games', '🎲'],
+          ['admin', 'Admin', '⚙️'],
+        ] as const).map(([view, label, emoji]) => (
           <button
             key={view}
             type="button"
@@ -987,7 +1168,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
             aria-pressed={activeView === view}
             onClick={() => setActiveView(view)}
           >
-            {label}
+            <span aria-hidden="true">{emoji}</span> {label}
           </button>
         ))}
       </div>
@@ -1023,9 +1204,9 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
           <aside className="lil-chat-history" aria-label="Chat history">
             <div className="lil-chat-history-heading">
               <h3>Recent chats</h3>
-              <span>{chatHistory.length}</span>
+              <span>{chatSessions.length}</span>
             </div>
-            {chatHistory.length === 0 ? (
+            {chatSessions.length === 0 ? (
               <p className="lil-chat-history-empty">Your chats will appear here.</p>
             ) : (
               <div
@@ -1037,19 +1218,19 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
                 onPointerCancel={handleChatHistoryPointerUp}
                 onClickCapture={handleChatHistoryClickCapture}
               >
-                {chatHistory.map((conversation) => (
+                {chatSessions.map((session) => (
                   <button
-                    key={conversation.id}
+                    key={session.id}
                     type="button"
-                    className={`lil-chat-history-item${activeChatId === conversation.id ? ' active' : ''}`}
-                    onClick={() => openChatConversation(conversation)}
+                    className={`lil-chat-history-item${activeChatId === session.id ? ' active' : ''}`}
+                    onClick={() => void openChatConversation(session)}
                     disabled={chatLoading}
-                    aria-pressed={activeChatId === conversation.id}
-                    title={conversation.title}
+                    aria-pressed={activeChatId === session.id}
+                    title={session.title}
                   >
-                    <span className="lil-chat-history-title">{conversation.title}</span>
-                    <time dateTime={new Date(conversation.updatedAt).toISOString()}>
-                      {new Date(conversation.updatedAt).toLocaleString()}
+                    <span className="lil-chat-history-title">{session.title}</span>
+                    <time dateTime={new Date(session.updatedAt).toISOString()}>
+                      {new Date(session.updatedAt).toLocaleString()}
                     </time>
                   </button>
                 ))}
@@ -1079,7 +1260,16 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
               </div>
             )}
           </div>
-          {chatError && <p className="lil-chat-error" role="alert">{chatError}</p>}
+          {chatError && (
+            <p className="lil-chat-error" role="alert">
+              {chatError}{' '}
+              {pendingMuseQueueId && (
+                <button type="button" onClick={() => void handleCheckMuseReply()} disabled={chatLoading}>
+                  Check for Muse’s reply
+                </button>
+              )}
+            </p>
+          )}
           <form className="lil-chat-form" onSubmit={handleSendChat}>
             <textarea
               id="lil-chat-input"
@@ -1101,7 +1291,11 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
               <span aria-hidden="true">➤</span>
             </button>
           </form>
-          <p className="lil-chat-note">Lil’s replies use a local AI model and may not always be accurate.</p>
+          <p className="lil-chat-note">
+            {selectedModels.chat === LIL_MUSE_MODEL_ID
+              ? 'Muse replies are queued and may take a little while to arrive.'
+              : 'Lil’s replies use a local AI model and may not always be accurate.'}
+          </p>
         </section>
       ) : activeView === 'code' ? (
         <section className="lil-code-view" aria-label="Create code with Lil">
@@ -1530,7 +1724,9 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
                   ? 'Open WebUI'
                   : currentResult.provider === 'ollama'
                     ? 'Local Ollama'
-                    : currentResult.provider || 'Ollama'}
+                    : currentResult.provider === 'workers-ai'
+                      ? 'Workers AI'
+                      : currentResult.provider || 'Ollama'}
               </span>
               <span className="lil-result-model-badge">{currentResult.model || 'llama3.2:3b'}</span>
             </div>

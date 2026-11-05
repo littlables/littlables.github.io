@@ -62,6 +62,7 @@ import {
   getAiCurationState,
   createTasteReaderRun,
   verifyTasteReaderAdmin,
+  verifyLilBridgeOrAdmin,
   recordTasteReaderWordScore,
   saveTasteReaderNote,
   extractAiText,
@@ -88,6 +89,10 @@ import { startSyncRun, updateSyncRun, finishSyncRun, isSyncRunHeartbeatDue, summ
 import { stageHalloweenBatch } from './halloween-batch.mjs';
 import { matchAdsToStory, rankAdsByEmbeddingSimilarity } from './ad-keyword-matcher.mjs';
 import { createAiUsageCounter, AI_USAGE_MODEL_LLAMA, AI_USAGE_MODEL_FLUX, AI_USAGE_MODEL_SDXL, AI_USAGE_MODEL_BGE } from './ai-usage-log.mjs';
+import { recordLilUsage, extractLilTokenUsage, LIL_WORKERS_AI_MODEL } from './lil-usage-log.mjs';
+import { getLilMemoryBlock, LIL_MEMORY_KINDS } from './lil-memory-recall.mjs';
+import { validateTranscriptRow, dedupeTranscriptRows } from './lil-transcripts.mjs';
+import { runGlobalDistill, GLOBAL_DISTILL_CRON } from './lil-global-distill.mjs';
 import { handleOpenWebUIGateway } from './openwebui-gateway.mjs';
 
 const MAX_REQUEST_BYTES = 64_000;
@@ -116,8 +121,10 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+// Step 1 (public-Lil release): Lil no longer depends on the admin's laptop.
+// It is "online" exactly when Workers AI is bound to this Worker — no
+// tunnel, no upstream fetch, and no credentials are proxied here.
 async function getLilOnlineStatus(env) {
-  const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
   const statusResponse = (online) => new Response(JSON.stringify({ online }), {
     headers: {
       ...corsHeaders,
@@ -125,23 +132,7 @@ async function getLilOnlineStatus(env) {
       'Content-Type': 'application/json; charset=utf-8'
     }
   });
-  if (!configuredOrigin) return statusResponse(false);
-
-  try {
-    const apiOrigin = new URL(configuredOrigin);
-    if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
-      return statusResponse(false);
-    }
-
-    const response = await fetch(`${apiOrigin.origin}/api/lil/status`, {
-      signal: AbortSignal.timeout(5000)
-    });
-    if (!response.ok) return statusResponse(false);
-    const status = await response.json();
-    return statusResponse(status?.online === true);
-  } catch {
-    return statusResponse(false);
-  }
+  return statusResponse(Boolean(env?.AI));
 }
 
 async function handleEngagementEvent(request, env) {
@@ -3303,6 +3294,33 @@ async function serveAiStoryImage(request, env) {
   }
 }
 
+/**
+ * Log one lil chat turn pair to lil_transcripts, best effort.
+ * Used so lil chat bubbles repopulate from the server instead of the
+ * browser cache. Never throws: a logging failure leaves a gap in the
+ * server log but must never take the answer away. Rows carry a stable
+ * source_key per turn, so a retried log dedupes on the table's
+ * (user_id, source_key) unique index instead of duplicating.
+ */
+async function logLilChatTurnPair(env, { userId, sessionId, userContent, assistantContent, model, timestamp }) {
+  try {
+    if (!sessionId || !userContent || !assistantContent) return false;
+    const rows = [
+      { user_id: userId, session_id: sessionId, source: 'lil-chat', role: 'user', model: model || null, content: userContent, message_timestamp: timestamp, source_key: `${sessionId}:${timestamp}:user` },
+      { user_id: userId, session_id: sessionId, source: 'lil-chat', role: 'assistant', model: model || null, content: assistantContent, message_timestamp: timestamp, source_key: `${sessionId}:${timestamp}:assistant` }
+    ];
+    const response = await fetch(supabaseUrl(env, 'lil_transcripts'), {
+      method: 'POST',
+      headers: supabaseHeaders(env, { Prefer: 'return=minimal' }),
+      body: JSON.stringify(rows)
+    });
+    // 409 is the unique-index dedupe firing on a retry: already logged.
+    return response.ok || response.status === 409;
+  } catch {
+    return false;
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -3356,8 +3374,17 @@ export default {
         return jsonResponse({ items: [], count: 0, error: err.message }, 500);
       }
     }
-    // Lil runs on the admin's laptop. The Worker verifies site admin access
-    // first, then forwards only this request to the private tunnel origin.
+    // Step 1 (public-Lil release): Lil runs on Cloudflare Workers AI, still
+    // admin-gated. The laptop tunnel is no longer used for search, chat,
+    // models, or status. The Open WebUI gateway for lil.littlables.com
+    // (the Admin tab iframe) is a separate route and is untouched.
+    // The model list is the pinned Workers AI model plus Muse, which
+    // is not a Workers AI model at all: selecting it queues the chat
+    // for the Muse bridge instead of answering inline (see the chat
+    // route below). This endpoint is admin-gated, so the Muse entry
+    // is admin-only by that gate; if this endpoint is ever opened to
+    // members, Muse must be filtered out for non-admins here, and the
+    // chat route must still reject model=muse for non-admins.
     if (request.method === 'GET' && pathname === '/api/lil/models') {
       try {
         if (env.SUMMARY_RATE_LIMITER) {
@@ -3370,31 +3397,458 @@ export default {
         const auth = await verifyTasteReaderAdmin(env, request);
         if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
 
-        const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
-        if (!configuredOrigin) return jsonResponse({ error: 'Lil laptop connection is not configured.' }, 503);
-
-        let apiOrigin;
-        try {
-          apiOrigin = new URL(configuredOrigin);
-        } catch {
-          return jsonResponse({ error: 'Lil laptop connection has an invalid URL.' }, 503);
-        }
-        if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
-          return jsonResponse({ error: 'Lil laptop connection must be an HTTPS origin.' }, 503);
-        }
-
-        const upstream = await fetch(`${apiOrigin.origin}/api/lil/models`, {
-          headers: { Authorization: request.headers.get('Authorization') || '' },
-          signal: AbortSignal.timeout(15_000)
-        });
-        const result = await upstream.json().catch(() => ({ error: 'Lil laptop returned an invalid response.' }));
-        return new Response(JSON.stringify(result), {
-          status: upstream.status,
+        return new Response(JSON.stringify({
+          models: [
+            { id: LIL_WORKERS_AI_MODEL, name: 'Llama 3.2 3B' },
+            { id: 'muse', name: 'Muse' }
+          ],
+          defaultModel: LIL_WORKERS_AI_MODEL
+        }), {
           headers: { ...corsHeaders, 'Cache-Control': 'no-store', 'Content-Type': 'application/json; charset=utf-8' }
         });
       } catch (err) {
         console.error('Lil model list request failed:', err);
-        return jsonResponse({ error: 'Could not load models from Open WebUI.' }, 502);
+        return jsonResponse({ error: 'Could not load Lil models.' }, 502);
+      }
+    }
+    // Step 1.5 memory endpoints (admin-only). By default these manage
+    // the admin's own memories: every query is scoped to auth.userId,
+    // so an admin can never list, add, or delete another user's
+    // memories through these routes. The one exception is global
+    // personality rows (user_id NULL): GET with ?scope=global lists
+    // them (including distillation drafts, for admin review), POST
+    // with { global: true } creates one (personality/style only), and
+    // DELETE removes one when no own row matches the id.
+    if (pathname === '/api/lil/memories') {
+      try {
+        if (env.SUMMARY_RATE_LIMITER) {
+          const limit = await env.SUMMARY_RATE_LIMITER.limit({
+            key: `lil:${request.headers.get('CF-Connecting-IP') || 'unknown'}`
+          });
+          if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
+        }
+        // Bridge auth is accepted for GET only: the bridge may read
+        // memories as context, but it may never create or delete them.
+        // POST and DELETE keep the signed-in admin check below.
+        const auth =
+          request.method === 'GET'
+            ? await verifyLilBridgeOrAdmin(env, request)
+            : await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+
+        if (request.method === 'GET') {
+          const globalScope = url.searchParams.get('scope') === 'global';
+          const params = new URLSearchParams({
+            select: 'id,user_id,kind,content,source,source_key,created_at',
+            order: 'created_at.desc',
+            limit: '50'
+          });
+          if (globalScope) params.set('user_id', 'is.null');
+          else params.set('user_id', `eq.${auth.userId}`);
+          const response = await fetch(supabaseUrl(env, 'lil_memories', params), { headers: supabaseHeaders(env) });
+          if (!response.ok) return jsonResponse({ error: 'Could not load Lil memories.' }, 502);
+          const memories = await response.json().catch(() => null);
+          if (!Array.isArray(memories)) return jsonResponse({ error: 'Could not load Lil memories.' }, 502);
+          return jsonResponse({ memories });
+        }
+
+        if (request.method === 'POST') {
+          const contentLength = Number(request.headers.get('Content-Length') || 0);
+          if (contentLength > 8192) return jsonResponse({ error: 'Lil memory is too large.' }, 413);
+          const payload = await request.json().catch(() => null);
+          const kind = typeof payload?.kind === 'string' ? payload.kind.trim() : '';
+          const content = typeof payload?.content === 'string' ? payload.content.trim() : '';
+          const source = typeof payload?.source === 'string' && payload.source.trim() ? payload.source.trim().slice(0, 100) : 'manual';
+          const sourceKey = typeof payload?.source_key === 'string' && payload.source_key.trim() ? payload.source_key.trim().slice(0, 500) : null;
+          const globalRow = payload?.global === true;
+          if (!LIL_MEMORY_KINDS.has(kind)) return jsonResponse({ error: 'Memory kind must be personality, style, preference, fact, or episode.' }, 400);
+          if (globalRow && kind !== 'personality' && kind !== 'style') {
+            return jsonResponse({ error: 'Global personality rows must be personality or style.' }, 400);
+          }
+          if (!content || content.length > 2000) return jsonResponse({ error: 'Memory content must be between 1 and 2000 characters.' }, 400);
+          const response = await fetch(supabaseUrl(env, 'lil_memories'), {
+            method: 'POST',
+            headers: supabaseHeaders(env, { Prefer: 'return=representation' }),
+            body: JSON.stringify({ user_id: globalRow ? null : auth.userId, kind, content, source, source_key: sourceKey })
+          });
+          if (!response.ok) return jsonResponse({ error: 'Could not save Lil memory.' }, 502);
+          const rows = await response.json().catch(() => null);
+          if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'Could not save Lil memory.' }, 502);
+          return jsonResponse(rows[0], 201);
+        }
+
+        if (request.method === 'DELETE') {
+          const id = url.searchParams.get('id') || '';
+          if (!id) return jsonResponse({ error: 'A memory id is required.' }, 400);
+          const ownParams = new URLSearchParams({ id: `eq.${id}`, user_id: `eq.${auth.userId}` });
+          const ownResponse = await fetch(supabaseUrl(env, 'lil_memories', ownParams), {
+            method: 'DELETE',
+            headers: supabaseHeaders(env, { Prefer: 'return=representation' })
+          });
+          if (!ownResponse.ok) return jsonResponse({ error: 'Could not delete Lil memory.' }, 502);
+          const ownRows = await ownResponse.json().catch(() => null);
+          if (Array.isArray(ownRows) && ownRows.length > 0) return jsonResponse({ ok: true, id: ownRows[0].id });
+          // No own row matched: the id may be a global row, which only
+          // the admin may delete. A member could never reach this
+          // branch, because the whole endpoint is admin-gated above.
+          const globalParams = new URLSearchParams({ id: `eq.${id}`, user_id: 'is.null' });
+          const globalResponse = await fetch(supabaseUrl(env, 'lil_memories', globalParams), {
+            method: 'DELETE',
+            headers: supabaseHeaders(env, { Prefer: 'return=representation' })
+          });
+          if (!globalResponse.ok) return jsonResponse({ error: 'Could not delete Lil memory.' }, 502);
+          const globalRows = await globalResponse.json().catch(() => null);
+          if (!Array.isArray(globalRows) || globalRows.length === 0) return jsonResponse({ error: 'Memory not found.' }, 404);
+          return jsonResponse({ ok: true, id: globalRows[0].id });
+        }
+
+        return jsonResponse({ error: 'Method not allowed.' }, 405);
+      } catch (err) {
+        console.error('Lil memory request failed:', err);
+        return jsonResponse({ error: 'Could not complete the Lil memory request.' }, 502);
+      }
+    }
+    // Step 1.5 expanded scope, admin-only (plus bridge auth, below).
+    // Transcript import: the body is an array of laptop export rows,
+    // and every imported row is stored under the CALLING admin's
+    // user_id — a user_id in the body is ignored, so an import can
+    // never be aimed at another account. With bridge auth the caller
+    // is the single is_admin profile resolved by verifyLilBridgeAuth.
+    // Rows whose (source, source_key) the admin already imported are
+    // skipped and reported, so re-running an import is safe.
+    if (request.method === 'POST' && pathname === '/api/lil/transcripts/import') {
+      try {
+        if (env.SUMMARY_RATE_LIMITER) {
+          const limit = await env.SUMMARY_RATE_LIMITER.limit({
+            key: `lil:${request.headers.get('CF-Connecting-IP') || 'unknown'}`
+          });
+          if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
+        }
+        // Bridge auth is accepted here: this is the bridge's whole-chat
+        // logging route, and it is one of only two routes that accept
+        // it (the other is memories GET above). The bridge secret is
+        // long-lived and never expires, so the bridge never needs a
+        // manually refreshed session token.
+        const auth = await verifyLilBridgeOrAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const contentLength = Number(request.headers.get('Content-Length') || 0);
+        if (contentLength > 524_288) return jsonResponse({ error: 'Transcript import is too large; send at most 200 rows per call.' }, 413);
+        const payload = await request.json().catch(() => null);
+        const incoming = Array.isArray(payload?.transcripts) ? payload.transcripts : null;
+        if (!incoming || incoming.length === 0 || incoming.length > 200) {
+          return jsonResponse({ error: 'Send 1 to 200 transcript rows per import call.' }, 400);
+        }
+        const validated = [];
+        let invalid = 0;
+        for (const row of incoming) {
+          const normalized = validateTranscriptRow(row);
+          if (normalized) validated.push(normalized);
+          else invalid += 1;
+        }
+        if (validated.length === 0) return jsonResponse({ error: 'No valid transcript rows to import.' }, 400);
+        const existingParams = new URLSearchParams({
+          select: 'source,source_key',
+          user_id: `eq.${auth.userId}`,
+          source_key: 'not.is.null',
+          limit: '10000'
+        });
+        const existingResponse = await fetch(supabaseUrl(env, 'lil_transcripts', existingParams), { headers: supabaseHeaders(env) });
+        if (!existingResponse.ok) return jsonResponse({ error: 'Could not check existing Lil transcripts.' }, 502);
+        const existingRows = await existingResponse.json().catch(() => null);
+        if (!Array.isArray(existingRows)) return jsonResponse({ error: 'Could not check existing Lil transcripts.' }, 502);
+        const existingKeys = new Set(existingRows.map((row) => `${row.source || ''}||${row.source_key}`));
+        const { newRows, skipped } = dedupeTranscriptRows(validated, existingKeys);
+        let imported = 0;
+        if (newRows.length > 0) {
+          const insertResponse = await fetch(supabaseUrl(env, 'lil_transcripts'), {
+            method: 'POST',
+            headers: supabaseHeaders(env, { Prefer: 'return=minimal' }),
+            body: JSON.stringify(newRows.map((row) => ({ ...row, user_id: auth.userId })))
+          });
+          if (!insertResponse.ok) return jsonResponse({ error: 'Could not import Lil transcripts.' }, 502);
+          imported = newRows.length;
+        }
+        return jsonResponse({ imported, skipped, invalid });
+      } catch (err) {
+        console.error('Lil transcript import failed:', err);
+        return jsonResponse({ error: 'Could not complete the Lil transcript import.' }, 502);
+      }
+    }
+    // Server-side lil chat logs: bubbles repopulate from lil_transcripts,
+    // not from the browser cache. Admin only, own rows only. The
+    // transcripts table is never used for recall and never injected
+    // into a prompt; these routes only read it back for display.
+    if (request.method === 'GET' && pathname === '/api/lil/transcripts') {
+      try {
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const sessionId = url.searchParams.get('session_id') || '';
+        if (!sessionId) return jsonResponse({ error: 'A session id is required.' }, 400);
+        const params = new URLSearchParams({
+          select: 'session_id,source,role,model,content,message_timestamp,source_key',
+          user_id: `eq.${auth.userId}`,
+          session_id: `eq.${sessionId}`,
+          order: 'message_timestamp.asc.nullslast,created_at.asc',
+          limit: '500'
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_transcripts', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load the lil chat log.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows)) return jsonResponse({ error: 'Could not load the lil chat log.' }, 502);
+        return jsonResponse({
+          session_id: sessionId,
+          messages: rows
+            .filter((row) => row && (row.role === 'user' || row.role === 'assistant') && typeof row.content === 'string')
+            .map((row) => ({ role: row.role, content: row.content }))
+        });
+      } catch (err) {
+        console.error('Lil transcripts read failed:', err);
+        return jsonResponse({ error: 'Could not load the lil chat log.' }, 502);
+      }
+    }
+    if (request.method === 'GET' && pathname === '/api/lil/transcripts/sessions') {
+      try {
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const params = new URLSearchParams({
+          select: 'session_id,role,content,message_timestamp,created_at',
+          user_id: `eq.${auth.userId}`,
+          order: 'message_timestamp.asc.nullslast,created_at.asc',
+          limit: '1000'
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_transcripts', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load lil chat sessions.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows)) return jsonResponse({ error: 'Could not load lil chat sessions.' }, 502);
+        const bySession = new Map();
+        for (const row of rows) {
+          if (!row || typeof row.session_id !== 'string' || !row.session_id) continue;
+          let session = bySession.get(row.session_id);
+          if (!session) {
+            session = { session_id: row.session_id, title: 'New chat', updatedAt: 0, messageCount: 0 };
+            bySession.set(row.session_id, session);
+          }
+          const when = Date.parse(row.message_timestamp || row.created_at || '') || 0;
+          if (when > session.updatedAt) session.updatedAt = when;
+          if (row.role === 'user' && typeof row.content === 'string' && session.title === 'New chat') {
+            session.title = row.content.length > 56 ? `${row.content.slice(0, 53).trimEnd()}…` : row.content;
+          }
+          session.messageCount += 1;
+        }
+        const sessions = [...bySession.values()]
+          .filter((session) => session.messageCount > 0)
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .slice(0, 30);
+        return jsonResponse({ sessions });
+      } catch (err) {
+        console.error('Lil transcript sessions read failed:', err);
+        return jsonResponse({ error: 'Could not load lil chat sessions.' }, 502);
+      }
+    }
+    if (request.method === 'GET' && pathname === '/api/lil/muse-queue/by-session') {
+      try {
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const sessionId = url.searchParams.get('session_id') || '';
+        if (!sessionId) return jsonResponse({ error: 'A session id is required.' }, 400);
+        const params = new URLSearchParams({
+          select: 'id,created_at',
+          user_id: `eq.${auth.userId}`,
+          session_id: `eq.${sessionId}`,
+          status: 'eq.pending',
+          order: 'created_at.asc'
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_muse_queue', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows)) return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+        return jsonResponse({ pending: rows.map((row) => ({ queue_id: row.id, created_at: row.created_at })) });
+      } catch (err) {
+        console.error('Lil muse queue by-session failed:', err);
+        return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+      }
+    }
+    // Muse queue: the lil chat "Muse" model, admin only.
+    //
+    // Flow: the chat route above queues a model=muse prompt here
+    // (lil_muse_queue, status pending). The lil frontend polls
+    // GET /api/lil/muse-queue?id= with its admin session token. The
+    // Muse-side bridge lists pending rows at
+    // GET /api/lil/muse-queue/pending with the bridge secret, answers
+    // them, and posts each reply to POST /api/lil/muse-queue/reply
+    // with the bridge secret. The pending and reply routes therefore
+    // accept bridge-or-admin auth, and they are — with transcripts
+    // import and memories GET — the only routes that do. The poll
+    // route accepts admin sessions only, and only for the caller's
+    // own rows, so one admin cannot read another's queued prompts.
+    //
+    // On a successful reply the Worker also logs the turn pair to
+    // lil_transcripts (source muse-queue, source_key queue_id:user
+    // and queue_id:assistant, session_id = the lil chat session or
+    // the queue id), so a Muse answer in lil is preserved like any
+    // other bridged chat. Transcript and usage failures never fail
+    // the reply itself: the user already has the answer via polling.
+    //
+    // These routes are deliberately not rate-limited by
+    // SUMMARY_RATE_LIMITER: the poll route is called every few
+    // seconds and would exhaust the shared 60/min lil limiter.
+    // Admin/bridge auth plus own-row scoping is the gate instead.
+    if (request.method === 'GET' && pathname === '/api/lil/muse-queue') {
+      try {
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const id = url.searchParams.get('id') || '';
+        if (!id) return jsonResponse({ error: 'A Muse queue id is required.' }, 400);
+        const params = new URLSearchParams({
+          select: 'id,status,reply,error,created_at,completed_at',
+          id: `eq.${id}`,
+          user_id: `eq.${auth.userId}`
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_muse_queue', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load the Muse request.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'Muse request not found.' }, 404);
+        const row = rows[0];
+        return jsonResponse({
+          queue_id: row.id,
+          status: row.status,
+          reply: row.reply || null,
+          error: row.error || null,
+          created_at: row.created_at,
+          completed_at: row.completed_at || null
+        });
+      } catch (err) {
+        console.error('Lil Muse queue poll failed:', err);
+        return jsonResponse({ error: 'Could not load the Muse request.' }, 502);
+      }
+    }
+    if (request.method === 'GET' && pathname === '/api/lil/muse-queue/pending') {
+      try {
+        const auth = await verifyLilBridgeOrAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const params = new URLSearchParams({
+          select: 'id,user_id,session_id,messages,created_at',
+          status: 'eq.pending',
+          order: 'created_at.asc',
+          limit: '10'
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_muse_queue', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows)) return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+        return jsonResponse({ pending: rows });
+      } catch (err) {
+        console.error('Lil Muse queue pending failed:', err);
+        return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+      }
+    }
+    if (request.method === 'POST' && pathname === '/api/lil/muse-queue/reply') {
+      try {
+        const auth = await verifyLilBridgeOrAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const contentLength = Number(request.headers.get('Content-Length') || 0);
+        if (contentLength > 524_288) return jsonResponse({ error: 'Muse reply is too large.' }, 413);
+        const payload = await request.json().catch(() => null);
+        const queueId = typeof payload?.queue_id === 'string' ? payload.queue_id.trim() : '';
+        const reply = typeof payload?.reply === 'string' ? payload.reply.trim() : '';
+        const replyError = typeof payload?.error === 'string' ? payload.error.trim() : '';
+        if (!queueId) return jsonResponse({ error: 'A Muse queue id is required.' }, 400);
+        if ((reply && replyError) || (!reply && !replyError)) {
+          return jsonResponse({ error: 'Send exactly one of reply or error.' }, 400);
+        }
+        if (reply && reply.length > 50_000) return jsonResponse({ error: 'Muse reply is too long.' }, 400);
+        if (replyError && replyError.length > 500) return jsonResponse({ error: 'Muse error is too long.' }, 400);
+        const rowParams = new URLSearchParams({
+          select: 'id,user_id,session_id,messages,status',
+          id: `eq.${queueId}`
+        });
+        const rowResponse = await fetch(supabaseUrl(env, 'lil_muse_queue', rowParams), { headers: supabaseHeaders(env) });
+        if (!rowResponse.ok) return jsonResponse({ error: 'Could not load the Muse request.' }, 502);
+        const rowRows = await rowResponse.json().catch(() => null);
+        if (!Array.isArray(rowRows) || rowRows.length === 0) return jsonResponse({ error: 'Muse request not found.' }, 404);
+        const row = rowRows[0];
+        if (row.status !== 'pending') return jsonResponse({ error: 'Muse request is no longer pending.' }, 409);
+        const completedAt = new Date().toISOString();
+        const newStatus = reply ? 'done' : 'error';
+        const updateResponse = await fetch(supabaseUrl(env, 'lil_muse_queue', new URLSearchParams({ id: `eq.${queueId}` })), {
+          method: 'PATCH',
+          headers: supabaseHeaders(env),
+          body: JSON.stringify({
+            status: newStatus,
+            reply: reply || null,
+            error: replyError || null,
+            completed_at: completedAt
+          })
+        });
+        if (!updateResponse.ok) return jsonResponse({ error: 'Could not save the Muse reply.' }, 502);
+        if (reply) {
+          // Best-effort transcript logging and usage counting: a
+          // failure here must not take the reply away from the user,
+          // who is already polling for it.
+          try {
+            const lastUser = Array.isArray(row.messages)
+              ? [...row.messages].reverse().find((m) => m && m.role === 'user' && typeof m.content === 'string')
+              : null;
+            const transcriptRows = [];
+            if (lastUser) {
+              transcriptRows.push({
+                user_id: row.user_id,
+                session_id: row.session_id || queueId,
+                source: 'muse-queue',
+                role: 'user',
+                model: 'muse',
+                content: lastUser.content,
+                message_timestamp: completedAt,
+                source_key: `${queueId}:user`
+              });
+            }
+            transcriptRows.push({
+              user_id: row.user_id,
+              session_id: row.session_id || queueId,
+              source: 'muse-queue',
+              role: 'assistant',
+              model: 'muse',
+              content: reply,
+              message_timestamp: completedAt,
+              source_key: `${queueId}:assistant`
+            });
+            await fetch(supabaseUrl(env, 'lil_transcripts'), {
+              method: 'POST',
+              headers: supabaseHeaders(env, { Prefer: 'return=minimal' }),
+              body: JSON.stringify(transcriptRows)
+            });
+          } catch (err) {
+            console.error('Lil Muse reply transcript logging failed:', err);
+          }
+          await recordLilUsage(env, { userId: row.user_id, usageType: 'chat', calls: 1, errors: 0 });
+        } else {
+          await recordLilUsage(env, { userId: row.user_id, usageType: 'chat', calls: 0, errors: 1 });
+        }
+        return jsonResponse({ ok: true, queue_id: queueId, status: newStatus });
+      } catch (err) {
+        console.error('Lil Muse queue reply failed:', err);
+        return jsonResponse({ error: 'Could not save the Muse reply.' }, 502);
+      }
+    }
+    // Step 1.5 expanded scope, admin-only manual trigger for the global
+    // distillation job. The job writes DRAFT global rows only; drafts
+    // are never recalled until the admin approves them.
+    if (request.method === 'POST' && pathname === '/api/lil/distill-global') {
+      try {
+        if (env.SUMMARY_RATE_LIMITER) {
+          const limit = await env.SUMMARY_RATE_LIMITER.limit({
+            key: `lil:${request.headers.get('CF-Connecting-IP') || 'unknown'}`
+          });
+          if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
+        }
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const result = await runGlobalDistill(env);
+        if (!result.ok) return jsonResponse({ error: result.error || 'Global Lil distillation failed.' }, 502);
+        return jsonResponse(result);
+      } catch (err) {
+        console.error('Lil global distillation request failed:', err);
+        return jsonResponse({ error: 'Could not complete the Lil global distillation.' }, 502);
       }
     }
     if (request.method === 'POST' && (pathname === '/api/lil/search' || pathname === '/api/lil/chat')) {
@@ -3413,13 +3867,18 @@ export default {
         if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
 
         const payload = await request.json().catch(() => null);
-        let forwardedRequest;
+        // Validation is unchanged from the laptop-forwarding version: the
+        // same size, history, and message-shape limits apply. Only the
+        // upstream changes — from the laptop tunnel to Workers AI.
+        let messages;
+        let query = '';
+        let mode = 'search';
         if (isChatRequest && Array.isArray(payload?.messages)) {
           if (payload.messages.length < 1 || payload.messages.length > 12) {
             return jsonResponse({ error: 'Chat history must contain between 1 and 12 messages.' }, 400);
           }
           let totalLength = 0;
-          const messages = [];
+          messages = [];
           for (const message of payload.messages) {
             if (!message || !['user', 'assistant'].includes(message.role) ||
                 typeof message.content !== 'string' || !message.content.trim() ||
@@ -3433,54 +3892,151 @@ export default {
           if (totalLength > 12_000 || messages[messages.length - 1].role !== 'user') {
             return jsonResponse({ error: 'Chat history is too long or does not end with a user message.' }, 400);
           }
-          forwardedRequest = {
-            messages,
-            mode: payload.mode === 'code' ? 'code' : 'chat'
-          };
+          // 'games' is accepted as a mode so the later usage-view step can
+          // count trivia generation separately; the frontend still sends
+          // 'chat' for games in Step 1, so those calls count as chat.
+          mode = payload.mode === 'code' ? 'code' : payload.mode === 'games' ? 'games' : 'chat';
         } else {
-          const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
+          query = typeof payload?.query === 'string' ? payload.query.trim() : '';
           if (!query) return jsonResponse({ error: 'Please provide a search question or topic.' }, 400);
           if (query.length > 500) return jsonResponse({ error: 'Lil questions must be 500 characters or fewer.' }, 400);
-          forwardedRequest = { query };
         }
         if (payload.model !== undefined) {
           if (typeof payload.model !== 'string' || !payload.model.trim() || payload.model.trim().length > 200) {
             return jsonResponse({ error: 'The selected model is invalid.' }, 400);
           }
-          forwardedRequest.model = payload.model.trim();
+          // Step 1 pins the model: a client-supplied model name is validated
+          // for shape but never used, so no request can reach the laptop.
+          // The one exception is Muse, handled just below.
         }
-        if (typeof payload.sessionId === 'string' && payload.sessionId.trim()) {
-          forwardedRequest.sessionId = payload.sessionId.trim().slice(0, 200);
+        // Muse model: chat only, admin only, queued — never inline.
+        // Muse (the personal assistant) has no public HTTP endpoint the
+        // Worker could call synchronously, and the bridge secret must
+        // never reach the browser, so the Worker does not forward to
+        // the bridge here. Instead it stores the prompt in
+        // lil_muse_queue and returns a queue id; the frontend polls
+        // for the reply, and the Muse-side bridge picks the row up and
+        // posts the reply back with the bridge secret (see the
+        // muse-queue routes below). The admin gate above already
+        // rejects non-admins with 401/403 before this point, so a
+        // crafted model=muse request from a member cannot queue.
+        const selectedModel = typeof payload?.model === 'string' ? payload.model.trim() : '';
+        if (selectedModel === 'muse') {
+          if (!isChatRequest || mode !== 'chat') {
+            return jsonResponse({ error: 'Muse is available for chat only.' }, 400);
+          }
+          const sessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim()
+            ? payload.sessionId.trim().slice(0, 500)
+            : null;
+          const insertResponse = await fetch(supabaseUrl(env, 'lil_muse_queue'), {
+            method: 'POST',
+            headers: supabaseHeaders(env, { Prefer: 'return=representation' }),
+            body: JSON.stringify({
+              user_id: auth.userId,
+              session_id: sessionId,
+              messages,
+              status: 'pending'
+            })
+          });
+          if (!insertResponse.ok) return jsonResponse({ error: 'Could not queue the Muse request.' }, 502);
+          const queueRows = await insertResponse.json().catch(() => null);
+          if (!Array.isArray(queueRows) || queueRows.length === 0 || !queueRows[0].id) {
+            return jsonResponse({ error: 'Could not queue the Muse request.' }, 502);
+          }
+          return jsonResponse({
+            queued: true,
+            queue_id: queueRows[0].id,
+            provider: 'muse-bridge',
+            model: 'muse'
+          });
         }
-        if (isChatRequest) forwardedRequest.source = `web-lil-${forwardedRequest.mode || 'chat'}`;
+        // sessionId is accepted but ignored: Step 1.5 recall is keyed by
+        // the signed-in user, not by a browser session, and no request
+        // leaves the Worker for a laptop session.
 
-        const configuredOrigin = String(env.LIL_API_ORIGIN || '').trim();
-        if (!configuredOrigin) return jsonResponse({ error: 'Lil laptop connection is not configured.' }, 503);
+        if (!env.AI) return jsonResponse({ error: 'Workers AI is not configured for this Worker' }, 503);
+        const usageType = isChatRequest ? mode : 'search';
+        let systemPrompt =
+          mode === 'code'
+            ? 'You are Lil, a friendly coding helper at littlables. Help curious kids and families with beginner-friendly, age-appropriate code projects. When asked for a page, reply with a complete, self-contained HTML document. Never include external scripts, network requests, or links to external resources, and avoid frightening or inappropriate detail.'
+            : mode === 'search'
+              ? 'You are Lil, the friendly discovery guide at littlables. Give curious kids and families clear, accurate, age-appropriate answers. Use short headings and bullets when useful, explain unfamiliar ideas simply, and avoid frightening or inappropriate detail. You do not have live web access, so be clear when a question depends on recent news or changing facts; never invent current events or sources.'
+              : 'You are Lil, the friendly discovery guide at littlables. Give curious kids and families clear, accurate, age-appropriate answers. Explain unfamiliar ideas simply, keep answers concise and encouraging, and avoid frightening or inappropriate detail. You do not have live web access, so be clear when a question depends on recent news or changing facts; never invent current events or sources.';
+        // Step 1.5 recall (admin-only): the recalled user is the admin
+        // herself. Recall never throws and never blocks the answer — on
+        // any failure Lil simply answers without memories. The block is
+        // appended to the system prompt, so it also counts toward the
+        // prompt tokens already logged by recordLilUsage.
+        const recallQuery = isChatRequest ? messages[messages.length - 1].content : query;
+        const memoryBlock = await getLilMemoryBlock(env, auth.userId, recallQuery);
+        if (memoryBlock) systemPrompt += `\n\n${memoryBlock}`;
+        const aiMessages = isChatRequest
+          ? [{ role: 'system', content: systemPrompt }, ...messages]
+          : [{ role: 'system', content: systemPrompt }, { role: 'user', content: query }];
+        const promptText = aiMessages.map((m) => m.content).join('\n');
 
-        let apiOrigin;
+        let aiRes;
         try {
-          apiOrigin = new URL(configuredOrigin);
-        } catch {
-          return jsonResponse({ error: 'Lil laptop connection has an invalid URL.' }, 503);
+          aiRes = await env.AI.run(LIL_WORKERS_AI_MODEL, {
+            messages: aiMessages,
+            max_tokens: 1024,
+            temperature: mode === 'code' ? 0.4 : 0.6
+          });
+        } catch (err) {
+          await recordLilUsage(env, { userId: auth.userId, usageType, calls: 0, errors: 1 });
+          console.error('Lil Workers AI request failed:', err);
+          return jsonResponse({ error: 'Lil could not generate a reply. Please try again.' }, 502);
         }
-        if (apiOrigin.protocol !== 'https:' || apiOrigin.username || apiOrigin.password || apiOrigin.pathname !== '/') {
-          return jsonResponse({ error: 'Lil laptop connection must be an HTTPS origin.' }, 503);
+        const answer = extractAiText(aiRes).trim();
+        if (!answer) {
+          await recordLilUsage(env, { userId: auth.userId, usageType, calls: 0, errors: 1 });
+          return jsonResponse({ error: 'Lil returned an empty reply.' }, 502);
         }
-
-        const upstream = await fetch(`${apiOrigin.origin}/api/lil/${isChatRequest ? 'chat' : 'search'}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: request.headers.get('Authorization') || ''
-          },
-          body: JSON.stringify(forwardedRequest),
-          signal: AbortSignal.timeout(125_000)
+        const tokens = extractLilTokenUsage(aiRes, promptText, answer);
+        // Logging never blocks the answer: recordLilUsage never throws,
+        // and a failed log just leaves a gap in the counts.
+        await recordLilUsage(env, {
+          userId: auth.userId,
+          usageType,
+          promptTokens: tokens.promptTokens,
+          completionTokens: tokens.completionTokens,
+          calls: 1,
+          errors: 0
         });
-        const result = await upstream.json().catch(() => ({ error: 'Lil laptop returned an invalid response.' }));
-        return jsonResponse(result, upstream.status);
+        // Server-side chat log, chat section only: the turn pair is
+        // stored in lil_transcripts so bubbles repopulate from the
+        // server instead of the browser cache. Best effort and never
+        // blocking: a logging failure leaves a gap, not a lost answer.
+        // Muse turns are not logged here; the muse-queue reply route
+        // already logs those (source muse-queue) when the reply lands.
+        if (isChatRequest && mode === 'chat') {
+          const chatSessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim()
+            ? payload.sessionId.trim().slice(0, 500)
+            : null;
+          const lastUserContent = messages[messages.length - 1]?.content || '';
+          await logLilChatTurnPair(env, {
+            userId: auth.userId,
+            sessionId: chatSessionId,
+            userContent: lastUserContent,
+            assistantContent: answer,
+            model: LIL_WORKERS_AI_MODEL,
+            timestamp: new Date().toISOString()
+          });
+        }
+        if (isChatRequest) {
+          return jsonResponse({ reply: answer, answer, provider: 'workers-ai', model: LIL_WORKERS_AI_MODEL });
+        }
+        return jsonResponse({
+          answer,
+          searchQueries: [],
+          sources: [],
+          provider: 'workers-ai',
+          model: LIL_WORKERS_AI_MODEL,
+          apiKeyNotice: 'Lil runs on Cloudflare Workers AI. Answers are generated from the model and are not checked against live web sources.'
+        });
       } catch (err) {
-        console.error('Lil laptop request failed:', err);
-        return jsonResponse({ error: 'Could not reach Lil on the Ollama laptop. Check that the laptop and tunnel are online.' }, 502);
+        console.error('Lil Workers AI request failed:', err);
+        return jsonResponse({ error: 'Lil could not generate a reply. Please try again.' }, 502);
       }
     }
     // Taste Reader step 2: manual selection run for the gated site page.
@@ -3974,6 +4530,19 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    // Weekly global Lil distillation runs on its own cron, independent
+    // of the provider sync toggle: it must not be skipped just because
+    // provider auto-sync is off. The cron '0 3 * * 0' (Sundays 03:00
+    // UTC) has to be added to the worker's triggers for this branch to
+    // fire; the manual POST /api/lil/distill-global endpoint works
+    // without it.
+    if (event?.cron === GLOBAL_DISTILL_CRON) {
+      const result = await runGlobalDistill(env);
+      console.info('Weekly Lil global distillation:', result.ok
+        ? `${result.draftsCreated} drafts from ${result.sampleMessages} assistant messages across ${result.sampleUsers} users`
+        : `failed: ${result.error}`);
+      return;
+    }
     if (env?.AUTO_SYNC_ENABLED === 'false') {
       console.info('Provider auto-sync skipped via AUTO_SYNC_ENABLED=false');
       return;

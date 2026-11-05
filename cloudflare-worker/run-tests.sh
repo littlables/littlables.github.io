@@ -15,6 +15,13 @@ TEST_FILES=(
   "cloudflare-worker/src/embedding-classifier.test.mjs"
   "cloudflare-worker/src/staggered-sync.test.mjs"
   "cloudflare-worker/src/ai-usage-log.test.mjs"
+  "cloudflare-worker/src/lil-usage-log.test.mjs"
+  "cloudflare-worker/src/lil-memory-recall.test.mjs"
+  "cloudflare-worker/src/lil-transcripts.test.mjs"
+  "cloudflare-worker/src/lil-global-distill.test.mjs"
+  "cloudflare-worker/src/lil-bridge-auth.test.mjs"
+  "cloudflare-worker/src/lil-muse-queue.test.mjs"
+  "cloudflare-worker/src/lil-server-chat-logs.test.mjs"
   "cloudflare-worker/src/provider-sync-runs.test.mjs"
   "cloudflare-worker/src/taste-reader.test.mjs"
 )

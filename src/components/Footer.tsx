@@ -19,7 +19,7 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAbout, onOpenDisclaimer, o
             data-umami-event="Open-Lil-Footer"
             onClick={onOpenLil}
           >
-            Meet Lil ✨
+            Meet Lil <img className="footer-lil-avatar" src="/img/lil-avatar.svg" alt="" aria-hidden="true" />
           </button>
         )}
         <button

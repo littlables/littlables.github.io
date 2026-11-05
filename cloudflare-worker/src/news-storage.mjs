@@ -3567,6 +3567,97 @@ export async function verifyTasteReaderAdmin(env, request) {
   return { userId };
 }
 
+// Compare two secret strings without leaking the first difference through
+// timing: walk both fully and accumulate differences, so a wrong secret
+// takes the same path as a right one. Lengths are compared first only
+// to avoid indexing past the shorter string; the loop still runs over
+// the longer one.
+function secretsEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  let diff = a.length === b.length ? 0 : 1;
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i += 1) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
+function bridgeBearerToken(request) {
+  const authHeader = request.headers.get('Authorization') || '';
+  return authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : '';
+}
+
+/**
+ * Lil bridge authentication (machine-to-machine, no user session).
+ *
+ * The bridge is a headless service, so it cannot hold a Supabase user
+ * session the way a signed-in browser can — and a session token would
+ * expire and need manual refreshing, which is exactly the maintenance
+ * the bridge must not require. Instead the bridge presents one
+ * long-lived secret, LIL_BRIDGE_SECRET, set once as a Cloudflare
+ * Worker secret (never in the repo, never in code) and once in the
+ * bridge's own environment. It never expires and is rotated only if
+ * it leaks.
+ *
+ * Returns:
+ * - null when the bridge credential is not presented: no secret is
+ *   configured, or the Bearer token does not match it. The caller
+ *   falls through to the normal admin check in that case.
+ * - { userId } when the secret matches and exactly one profile has
+ *   is_admin true: transcripts and memories are attributed to that
+ *   admin, the same account a signed-in admin import would use.
+ * - { error, status } when the secret matches but attribution cannot
+ *   be resolved (no admin, more than one admin, or the profile lookup
+ *   failed). The caller must return this error, NOT fall through to
+ *   the admin check — a matched bridge secret must never silently
+ *   become an anonymous request.
+ *
+ * Scope is enforced by the caller, not here: only the routes that
+ * explicitly call verifyLilBridgeOrAdmin accept bridge auth, and
+ * those are transcripts import, memories GET, and the Muse queue
+ * pending/reply routes. Every other admin-gated route keeps calling
+ * verifyTasteReaderAdmin directly, so the bridge secret buys nothing
+ * else.
+ */
+export async function verifyLilBridgeAuth(env, request) {
+  const secret = typeof env?.LIL_BRIDGE_SECRET === 'string' ? env.LIL_BRIDGE_SECRET : '';
+  if (!secret) return null;
+  const token = bridgeBearerToken(request);
+  if (!token || !secretsEqual(token, secret)) return null;
+  if (!env?.SUPABASE_URL || !env?.SUPABASE_SECRET_KEY) {
+    return { error: 'Lil bridge is not configured', status: 503 };
+  }
+  let profileResponse;
+  try {
+    profileResponse = await fetch(
+      supabaseUrl(env, 'profiles', new URLSearchParams({ select: 'id', is_admin: 'eq.true', limit: '2' })),
+      { headers: supabaseHeaders(env) }
+    );
+  } catch {
+    return { error: 'Could not resolve bridge admin', status: 502 };
+  }
+  if (!profileResponse.ok) {
+    return { error: 'Could not resolve bridge admin', status: 502 };
+  }
+  const rows = await profileResponse.json().catch(() => null);
+  if (!Array.isArray(rows) || rows.length !== 1 || typeof rows[0].id !== 'string') {
+    return { error: 'Could not resolve bridge admin', status: 502 };
+  }
+  return { userId: rows[0].id };
+}
+
+/**
+ * Accept bridge auth or a signed-in admin, for the bridge routes
+ * only (transcripts import, memories GET, Muse queue pending/reply).
+ * Bridge attribution errors are returned as-is; a merely absent
+ * bridge credential falls through to the normal admin check.
+ */
+export async function verifyLilBridgeOrAdmin(env, request) {
+  const bridge = await verifyLilBridgeAuth(env, request);
+  if (bridge) return bridge;
+  return verifyTasteReaderAdmin(env, request);
+}
+
 /**
  * Build one Taste Reader pool: run row + ordered run items, first page
  * returned. Returns { error } on an invalid interest filter, otherwise
