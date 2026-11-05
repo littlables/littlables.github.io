@@ -16,6 +16,7 @@ TEST_FILES=(
   "cloudflare-worker/src/staggered-sync.test.mjs"
   "cloudflare-worker/src/ai-usage-log.test.mjs"
   "cloudflare-worker/src/lil-usage-log.test.mjs"
+  "cloudflare-worker/src/lil-web-search.test.mjs"
   "cloudflare-worker/src/lil-memory-recall.test.mjs"
   "cloudflare-worker/src/lil-transcripts.test.mjs"
   "cloudflare-worker/src/lil-global-distill.test.mjs"

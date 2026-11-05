@@ -90,6 +90,7 @@ import { stageHalloweenBatch } from './halloween-batch.mjs';
 import { matchAdsToStory, rankAdsByEmbeddingSimilarity } from './ad-keyword-matcher.mjs';
 import { createAiUsageCounter, AI_USAGE_MODEL_LLAMA, AI_USAGE_MODEL_FLUX, AI_USAGE_MODEL_SDXL, AI_USAGE_MODEL_BGE } from './ai-usage-log.mjs';
 import { recordLilUsage, extractLilTokenUsage, LIL_WORKERS_AI_MODEL } from './lil-usage-log.mjs';
+import { searchLilWebSources, logLilSearch } from './lil-web-search.mjs';
 import { getLilMemoryBlock, LIL_MEMORY_KINDS } from './lil-memory-recall.mjs';
 import { validateTranscriptRow, dedupeTranscriptRows } from './lil-transcripts.mjs';
 import { runGlobalDistill, GLOBAL_DISTILL_CRON } from './lil-global-distill.mjs';
@@ -3970,6 +3971,42 @@ export default {
         const recallQuery = isChatRequest ? messages[messages.length - 1].content : query;
         const memoryBlock = await getLilMemoryBlock(env, auth.userId, recallQuery);
         if (memoryBlock) systemPrompt += `\n\n${memoryBlock}`;
+        // Web-search layers (Wikipedia → Ceramic → Serper ground the
+        // answer; balloons ride along in their own section and never
+        // ground it).
+        // Search mode only: chat, code, and games stay model-only. Every
+        // layer fails open, so a provider outage degrades to fewer sources,
+        // never to a lost answer. The grounding text goes into the prompt
+        // only — it is never returned to the client and never logged.
+        let webSources = null;
+        if (!isChatRequest) {
+          webSources = await searchLilWebSources(env, query);
+          if (webSources.grounding.length > 0) {
+            systemPrompt = systemPrompt.replace(
+              'You do not have live web access, so be clear when a question depends on recent news or changing facts; never invent current events or sources.',
+              'Answer only from the sources below. Cite them by title when you use them. If none of the sources below answers the question, say "I couldn\'t find a good source for that yet." and stop there — do not answer from memory. Never invent a URL or a source.'
+            );
+            systemPrompt += `\n\nSources:\n${webSources.grounding.map((g, i) => `${i + 1}. ${g.title} (${g.url}): ${g.text}`).join('\n')}`;
+          }
+        }
+        // Metadata-only audit log (no titles or snippets, ever): the same
+        // entry is logged on success, on a model error, and on an empty
+        // reply, so the log shows what the model had to work with.
+        const logSearchTurn = (status, errorType) => webSources
+          ? logLilSearch(env, {
+              userId: auth.userId,
+              query,
+              layersUsed: webSources.layersUsed,
+              counts: webSources.counts,
+              // Audit everything the user was shown: grounding sources
+              // first, then the balloons from their own section.
+              resultUrls: [...webSources.sources, ...(webSources.balloons || [])].map((s) => s.url),
+              domains: [...new Set([...webSources.sources, ...(webSources.balloons || [])].map((s) => s.domain).filter(Boolean))],
+              latencyMs: webSources.latencyMs,
+              status,
+              errorType
+            })
+          : Promise.resolve(false);
         const aiMessages = isChatRequest
           ? [{ role: 'system', content: systemPrompt }, ...messages]
           : [{ role: 'system', content: systemPrompt }, { role: 'user', content: query }];
@@ -3984,12 +4021,14 @@ export default {
           });
         } catch (err) {
           await recordLilUsage(env, { userId: auth.userId, usageType, calls: 0, errors: 1 });
+          await logSearchTurn('error', 'model-error');
           console.error('Lil Workers AI request failed:', err);
           return jsonResponse({ error: 'Lil could not generate a reply. Please try again.' }, 502);
         }
         const answer = extractAiText(aiRes).trim();
         if (!answer) {
           await recordLilUsage(env, { userId: auth.userId, usageType, calls: 0, errors: 1 });
+          await logSearchTurn('error', 'empty-reply');
           return jsonResponse({ error: 'Lil returned an empty reply.' }, 502);
         }
         const tokens = extractLilTokenUsage(aiRes, promptText, answer);
@@ -4003,6 +4042,9 @@ export default {
           calls: 1,
           errors: 0
         });
+        if (!isChatRequest) {
+          await logSearchTurn(Object.keys(webSources.layerErrors).length > 0 ? 'partial' : 'ok', null);
+        }
         // Server-side chat log, chat section only: the turn pair is
         // stored in lil_transcripts so bubbles repopulate from the
         // server instead of the browser cache. Best effort and never
@@ -4026,13 +4068,21 @@ export default {
         if (isChatRequest) {
           return jsonResponse({ reply: answer, answer, provider: 'workers-ai', model: LIL_WORKERS_AI_MODEL });
         }
+        const sourceLabels = { wikipedia: 'Wikipedia', ceramic: 'Ceramic', serper: 'live web results' };
+        const checkedLayers = (webSources?.layersUsed || []).map((l) => sourceLabels[l] || l);
+        const checkedList = checkedLayers.length <= 1
+          ? checkedLayers.join('')
+          : `${checkedLayers.slice(0, -1).join(', ')} and ${checkedLayers[checkedLayers.length - 1]}`;
         return jsonResponse({
           answer,
-          searchQueries: [],
-          sources: [],
+          searchQueries: webSources?.searchQueries || [],
+          sources: webSources?.sources || [],
+          balloons: webSources?.balloons || [],
           provider: 'workers-ai',
           model: LIL_WORKERS_AI_MODEL,
-          apiKeyNotice: 'Lil runs on Cloudflare Workers AI. Answers are generated from the model and are not checked against live web sources.'
+          apiKeyNotice: checkedList
+            ? `Lil checked ${checkedList} for this answer.`
+            : 'Lil runs on Cloudflare Workers AI. Answers are generated from the model and are not checked against live web sources.'
         });
       } catch (err) {
         console.error('Lil Workers AI request failed:', err);
