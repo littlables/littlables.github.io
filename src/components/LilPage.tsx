@@ -37,6 +37,16 @@ interface LilChatSession {
   updatedAt: number;
 }
 
+// Shape the Worker actually returns for GET /api/lil/transcripts/sessions.
+// It uses session_id, not id — the previous filter checked session.id and
+// dropped every session. Map session_id to id when reading, so the rest
+// of the page (which uses session.id) stays unchanged.
+interface LilChatSessionRow {
+  session_id: string;
+  title: string;
+  updatedAt: number;
+}
+
 type LilView = 'search' | 'chat' | 'code' | 'games' | 'admin';
 type LilChatMode = 'chat' | 'code';
 type LilModelSection = 'search' | 'chat' | 'code' | 'games';
@@ -195,11 +205,16 @@ async function fetchLilChatSessions(): Promise<LilChatSession[]> {
   if (!response.ok) throw new Error(data.error || `Could not load lil chats (${response.status}).`);
   if (!Array.isArray(data.sessions)) return [];
   return data.sessions
-    .filter((session: unknown): session is LilChatSession =>
+    .filter((session: unknown): session is LilChatSessionRow =>
       !!session && typeof session === 'object' &&
-      typeof (session as LilChatSession).id === 'string' &&
-      typeof (session as LilChatSession).title === 'string' &&
-      Number.isFinite((session as LilChatSession).updatedAt))
+      typeof (session as LilChatSessionRow).session_id === 'string' &&
+      typeof (session as LilChatSessionRow).title === 'string' &&
+      Number.isFinite((session as LilChatSessionRow).updatedAt))
+    .map((row: LilChatSessionRow): LilChatSession => ({
+      id: row.session_id,
+      title: row.title,
+      updatedAt: row.updatedAt,
+    }))
     .slice(0, MAX_SAVED_CHATS);
 }
 
