@@ -128,7 +128,59 @@ const LIL_CHAT_URL = import.meta.env.DEV
 const LIL_MODELS_URL = import.meta.env.DEV
   ? '/api/lil/models'
   : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/models`;
+const LIL_MUSE_QUEUE_URL = import.meta.env.DEV
+  ? '/api/lil/muse-queue'
+  : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/muse-queue`;
 const LIL_MODEL_PREFERENCES_KEY = 'littlables_lil_models';
+// Muse is a chat-only model: it appears in the chat dropdown and nowhere
+// else, and the Worker rejects model=muse for any other mode, so a
+// crafted request cannot route code/games/search work to Muse either.
+const LIL_MUSE_MODEL_ID = 'muse';
+const LIL_MUSE_POLL_MS = 3000;
+const LIL_MUSE_POLL_TIMEOUT_MS = 300_000;
+
+async function lilAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  const client = getSupabaseClient();
+  if (client) {
+    const { data: { session } } = await client.auth.getSession();
+    if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+  }
+  return headers;
+}
+
+// Thrown when a Muse queue poll times out. The prompt is still queued
+// on the Worker, so the caller keeps the queue id and offers a
+// "Check for Muse's reply" retry instead of resubmitting the prompt
+// and creating a duplicate queue row.
+class MuseQueuePendingError extends Error {
+  queueId: string;
+  constructor(queueId: string) {
+    super('Muse has not replied yet. Your prompt is still queued.');
+    this.queueId = queueId;
+  }
+}
+
+async function pollMuseQueueForReply(queueId: string): Promise<string> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < LIL_MUSE_POLL_TIMEOUT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, LIL_MUSE_POLL_MS));
+    const response = await fetch(`${LIL_MUSE_QUEUE_URL}?id=${encodeURIComponent(queueId)}`, {
+      headers: await lilAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not check for Muse's reply (${response.status}).`);
+    if (data.status === 'done') {
+      if (typeof data.reply !== 'string' || !data.reply.trim()) throw new Error('Muse returned an empty reply.');
+      return data.reply.trim();
+    }
+    if (data.status === 'error') {
+      throw new Error(typeof data.error === 'string' && data.error.trim() ? data.error : 'Muse could not reply to that prompt.');
+    }
+    // status pending: keep polling until the timeout above.
+  }
+  throw new MuseQueuePendingError(queueId);
+}
 
 async function requestLilChat(messages: LilChatMessage[], sessionId: string, mode: LilChatMode, model: string) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -212,6 +264,10 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
   const [chatDraft, setChatDraft] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  // A Muse queue id whose reply has not arrived yet (poll timed out).
+  // Kept so the user can check again for the same reply instead of
+  // resubmitting and creating a duplicate queue row.
+  const [pendingMuseQueueId, setPendingMuseQueueId] = useState<string | null>(null);
   const [codePrompt, setCodePrompt] = useState('');
   const [lilModels, setLilModels] = useState<LilModel[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -376,10 +432,10 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
           ? data.defaultModel
           : models[0].id;
         const next = {
-          search: availableIds.has(current.search) ? current.search : defaultModel,
+          search: availableIds.has(current.search) && current.search !== LIL_MUSE_MODEL_ID ? current.search : defaultModel,
           chat: availableIds.has(current.chat) ? current.chat : defaultModel,
-          code: availableIds.has(current.code) ? current.code : defaultModel,
-          games: availableIds.has(current.games) ? current.games : defaultModel,
+          code: availableIds.has(current.code) && current.code !== LIL_MUSE_MODEL_ID ? current.code : defaultModel,
+          games: availableIds.has(current.games) && current.games !== LIL_MUSE_MODEL_ID ? current.games : defaultModel,
         };
         try {
           localStorage.setItem(LIL_MODEL_PREFERENCES_KEY, JSON.stringify(next));
@@ -407,18 +463,25 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     });
   };
 
-  const renderLilModelSelect = (section: LilModelSection) => (
+  const renderLilModelSelect = (section: LilModelSection) => {
+    // Muse is chat-only: every other section's dropdown hides it, and
+    // the Worker rejects model=muse outside chat, so the UI filter is
+    // a convenience, not the security gate.
+    const visibleModels = section === 'chat'
+      ? lilModels
+      : lilModels.filter((model) => model.id !== LIL_MUSE_MODEL_ID);
+    return (
     <div className="lil-model-control">
       <label htmlFor={`lil-model-${section}`}>Model</label>
       <select
         id={`lil-model-${section}`}
         value={selectedModels[section]}
         onChange={(event) => selectLilModel(section, event.target.value)}
-        disabled={modelsLoading || lilModels.length === 0}
+        disabled={modelsLoading || visibleModels.length === 0}
       >
         {modelsLoading && <option value="">Loading models…</option>}
-        {!modelsLoading && lilModels.length === 0 && <option value="">Models unavailable</option>}
-        {lilModels.map((model) => (
+        {!modelsLoading && visibleModels.length === 0 && <option value="">Models unavailable</option>}
+        {visibleModels.map((model) => (
           <option key={model.id} value={model.id}>{model.name}</option>
         ))}
       </select>
@@ -429,7 +492,8 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
         </span>
       )}
     </div>
-  );
+    );
+  };
 
   useEffect(() => {
     if (activeView !== 'admin' || isLocalHost || !isAdmin) return;
@@ -551,18 +615,68 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     setChatMessages(nextMessages);
     setChatDraft('');
     setChatError(null);
+    setPendingMuseQueueId(null);
     setChatLoading(true);
     try {
-      const answer = await requestLilChat(requestMessages, sessionIdRef.current, 'chat', selectedModels.chat);
+      let answer: string;
+      if (selectedModels.chat === LIL_MUSE_MODEL_ID) {
+        // Muse path: POST queues the prompt, then poll for the reply.
+        // requestLilChat cannot return a queued reply, so this path
+        // posts directly and polls here instead.
+        const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(await lilAuthHeaders()) };
+        const queueResponse = await fetch(LIL_CHAT_URL, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ messages: requestMessages, sessionId: sessionIdRef.current, mode: 'chat', model: LIL_MUSE_MODEL_ID }),
+        });
+        const queueData = await queueResponse.json().catch(() => ({}));
+        if (!queueResponse.ok) throw new Error(queueData.error || `Lil request failed with status ${queueResponse.status}`);
+        if (!queueData.queued || typeof queueData.queue_id !== 'string') {
+          throw new Error('Muse did not queue the prompt. Please try again.');
+        }
+        answer = await pollMuseQueueForReply(queueData.queue_id);
+      } else {
+        answer = await requestLilChat(requestMessages, sessionIdRef.current, 'chat', selectedModels.chat);
+      }
       const completedMessages = [...nextMessages, { role: 'assistant' as const, content: answer }];
       setChatMessages(completedMessages);
       saveChatConversation(conversationId, completedMessages);
     } catch (error) {
-      const previousMessages = nextMessages.slice(0, -1);
-      setChatMessages(previousMessages);
-      saveChatConversation(conversationId, previousMessages);
-      setChatDraft(text);
-      setChatError(error instanceof Error ? error.message : 'Lil could not reply. Please try again.');
+      if (error instanceof MuseQueuePendingError) {
+        // The prompt is still queued: keep the user's message in the
+        // chat (the reply may still arrive) and offer a re-check.
+        setPendingMuseQueueId(error.queueId);
+        setChatError(error.message);
+      } else {
+        const previousMessages = nextMessages.slice(0, -1);
+        setChatMessages(previousMessages);
+        saveChatConversation(conversationId, previousMessages);
+        setChatDraft(text);
+        setChatError(error instanceof Error ? error.message : 'Lil could not reply. Please try again.');
+      }
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const handleCheckMuseReply = async () => {
+    if (!pendingMuseQueueId || chatLoading) return;
+    const queueId = pendingMuseQueueId;
+    setChatError(null);
+    setChatLoading(true);
+    try {
+      const answer = await pollMuseQueueForReply(queueId);
+      const completedMessages = [...chatMessages, { role: 'assistant' as const, content: answer }];
+      setChatMessages(completedMessages);
+      if (activeChatId) saveChatConversation(activeChatId, completedMessages);
+      setPendingMuseQueueId(null);
+    } catch (error) {
+      if (error instanceof MuseQueuePendingError) {
+        setChatError(error.message);
+      } else {
+        setPendingMuseQueueId(null);
+        setChatError(error instanceof Error ? error.message : 'Could not check for Muse\'s reply. Please try again.');
+      }
     } finally {
       setChatLoading(false);
     }
@@ -1078,7 +1192,16 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
               </div>
             )}
           </div>
-          {chatError && <p className="lil-chat-error" role="alert">{chatError}</p>}
+          {chatError && (
+            <p className="lil-chat-error" role="alert">
+              {chatError}{' '}
+              {pendingMuseQueueId && (
+                <button type="button" onClick={() => void handleCheckMuseReply()} disabled={chatLoading}>
+                  Check for Muse’s reply
+                </button>
+              )}
+            </p>
+          )}
           <form className="lil-chat-form" onSubmit={handleSendChat}>
             <textarea
               id="lil-chat-input"
@@ -1100,7 +1223,11 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
               <span aria-hidden="true">➤</span>
             </button>
           </form>
-          <p className="lil-chat-note">Lil’s replies use a local AI model and may not always be accurate.</p>
+          <p className="lil-chat-note">
+            {selectedModels.chat === LIL_MUSE_MODEL_ID
+              ? 'Muse replies are queued and may take a little while to arrive.'
+              : 'Lil’s replies use a local AI model and may not always be accurate.'}
+          </p>
         </section>
       ) : activeView === 'code' ? (
         <section className="lil-code-view" aria-label="Create code with Lil">

@@ -62,6 +62,7 @@ import {
   getAiCurationState,
   createTasteReaderRun,
   verifyTasteReaderAdmin,
+  verifyLilBridgeOrAdmin,
   recordTasteReaderWordScore,
   saveTasteReaderNote,
   extractAiText,
@@ -3350,8 +3351,13 @@ export default {
     // admin-gated. The laptop tunnel is no longer used for search, chat,
     // models, or status. The Open WebUI gateway for lil.littlables.com
     // (the Admin tab iframe) is a separate route and is untouched.
-    // The model list is pinned to the single Workers AI model so the
-    // frontend picker cannot select a laptop/Open WebUI model.
+    // The model list is the pinned Workers AI model plus Muse, which
+    // is not a Workers AI model at all: selecting it queues the chat
+    // for the Muse bridge instead of answering inline (see the chat
+    // route below). This endpoint is admin-gated, so the Muse entry
+    // is admin-only by that gate; if this endpoint is ever opened to
+    // members, Muse must be filtered out for non-admins here, and the
+    // chat route must still reject model=muse for non-admins.
     if (request.method === 'GET' && pathname === '/api/lil/models') {
       try {
         if (env.SUMMARY_RATE_LIMITER) {
@@ -3365,7 +3371,10 @@ export default {
         if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
 
         return new Response(JSON.stringify({
-          models: [{ id: LIL_WORKERS_AI_MODEL, name: 'Llama 3.2 3B' }],
+          models: [
+            { id: LIL_WORKERS_AI_MODEL, name: 'Llama 3.2 3B' },
+            { id: 'muse', name: 'Muse' }
+          ],
           defaultModel: LIL_WORKERS_AI_MODEL
         }), {
           headers: { ...corsHeaders, 'Cache-Control': 'no-store', 'Content-Type': 'application/json; charset=utf-8' }
@@ -3391,7 +3400,13 @@ export default {
           });
           if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
         }
-        const auth = await verifyTasteReaderAdmin(env, request);
+        // Bridge auth is accepted for GET only: the bridge may read
+        // memories as context, but it may never create or delete them.
+        // POST and DELETE keep the signed-in admin check below.
+        const auth =
+          request.method === 'GET'
+            ? await verifyLilBridgeOrAdmin(env, request)
+            : await verifyTasteReaderAdmin(env, request);
         if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
 
         if (request.method === 'GET') {
@@ -3466,10 +3481,12 @@ export default {
         return jsonResponse({ error: 'Could not complete the Lil memory request.' }, 502);
       }
     }
-    // Step 1.5 expanded scope, admin-only. Transcript import: the body
-    // is an array of laptop export rows, and every imported row is
-    // stored under the CALLING admin's user_id — a user_id in the body
-    // is ignored, so an import can never be aimed at another account.
+    // Step 1.5 expanded scope, admin-only (plus bridge auth, below).
+    // Transcript import: the body is an array of laptop export rows,
+    // and every imported row is stored under the CALLING admin's
+    // user_id — a user_id in the body is ignored, so an import can
+    // never be aimed at another account. With bridge auth the caller
+    // is the single is_admin profile resolved by verifyLilBridgeAuth.
     // Rows whose (source, source_key) the admin already imported are
     // skipped and reported, so re-running an import is safe.
     if (request.method === 'POST' && pathname === '/api/lil/transcripts/import') {
@@ -3480,7 +3497,12 @@ export default {
           });
           if (!limit.success) return jsonResponse({ error: 'Lil rate limit exceeded; try again shortly' }, 429);
         }
-        const auth = await verifyTasteReaderAdmin(env, request);
+        // Bridge auth is accepted here: this is the bridge's whole-chat
+        // logging route, and it is one of only two routes that accept
+        // it (the other is memories GET above). The bridge secret is
+        // long-lived and never expires, so the bridge never needs a
+        // manually refreshed session token.
+        const auth = await verifyLilBridgeOrAdmin(env, request);
         if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
         const contentLength = Number(request.headers.get('Content-Length') || 0);
         if (contentLength > 524_288) return jsonResponse({ error: 'Transcript import is too large; send at most 200 rows per call.' }, 413);
@@ -3523,6 +3545,168 @@ export default {
       } catch (err) {
         console.error('Lil transcript import failed:', err);
         return jsonResponse({ error: 'Could not complete the Lil transcript import.' }, 502);
+      }
+    }
+    // Muse queue: the lil chat "Muse" model, admin only.
+    //
+    // Flow: the chat route above queues a model=muse prompt here
+    // (lil_muse_queue, status pending). The lil frontend polls
+    // GET /api/lil/muse-queue?id= with its admin session token. The
+    // Muse-side bridge lists pending rows at
+    // GET /api/lil/muse-queue/pending with the bridge secret, answers
+    // them, and posts each reply to POST /api/lil/muse-queue/reply
+    // with the bridge secret. The pending and reply routes therefore
+    // accept bridge-or-admin auth, and they are — with transcripts
+    // import and memories GET — the only routes that do. The poll
+    // route accepts admin sessions only, and only for the caller's
+    // own rows, so one admin cannot read another's queued prompts.
+    //
+    // On a successful reply the Worker also logs the turn pair to
+    // lil_transcripts (source muse-queue, source_key queue_id:user
+    // and queue_id:assistant, session_id = the lil chat session or
+    // the queue id), so a Muse answer in lil is preserved like any
+    // other bridged chat. Transcript and usage failures never fail
+    // the reply itself: the user already has the answer via polling.
+    //
+    // These routes are deliberately not rate-limited by
+    // SUMMARY_RATE_LIMITER: the poll route is called every few
+    // seconds and would exhaust the shared 60/min lil limiter.
+    // Admin/bridge auth plus own-row scoping is the gate instead.
+    if (request.method === 'GET' && pathname === '/api/lil/muse-queue') {
+      try {
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const id = url.searchParams.get('id') || '';
+        if (!id) return jsonResponse({ error: 'A Muse queue id is required.' }, 400);
+        const params = new URLSearchParams({
+          select: 'id,status,reply,error,created_at,completed_at',
+          id: `eq.${id}`,
+          user_id: `eq.${auth.userId}`
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_muse_queue', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load the Muse request.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'Muse request not found.' }, 404);
+        const row = rows[0];
+        return jsonResponse({
+          queue_id: row.id,
+          status: row.status,
+          reply: row.reply || null,
+          error: row.error || null,
+          created_at: row.created_at,
+          completed_at: row.completed_at || null
+        });
+      } catch (err) {
+        console.error('Lil Muse queue poll failed:', err);
+        return jsonResponse({ error: 'Could not load the Muse request.' }, 502);
+      }
+    }
+    if (request.method === 'GET' && pathname === '/api/lil/muse-queue/pending') {
+      try {
+        const auth = await verifyLilBridgeOrAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const params = new URLSearchParams({
+          select: 'id,user_id,session_id,messages,created_at',
+          status: 'eq.pending',
+          order: 'created_at.asc',
+          limit: '10'
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_muse_queue', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows)) return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+        return jsonResponse({ pending: rows });
+      } catch (err) {
+        console.error('Lil Muse queue pending failed:', err);
+        return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+      }
+    }
+    if (request.method === 'POST' && pathname === '/api/lil/muse-queue/reply') {
+      try {
+        const auth = await verifyLilBridgeOrAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const contentLength = Number(request.headers.get('Content-Length') || 0);
+        if (contentLength > 524_288) return jsonResponse({ error: 'Muse reply is too large.' }, 413);
+        const payload = await request.json().catch(() => null);
+        const queueId = typeof payload?.queue_id === 'string' ? payload.queue_id.trim() : '';
+        const reply = typeof payload?.reply === 'string' ? payload.reply.trim() : '';
+        const replyError = typeof payload?.error === 'string' ? payload.error.trim() : '';
+        if (!queueId) return jsonResponse({ error: 'A Muse queue id is required.' }, 400);
+        if ((reply && replyError) || (!reply && !replyError)) {
+          return jsonResponse({ error: 'Send exactly one of reply or error.' }, 400);
+        }
+        if (reply && reply.length > 50_000) return jsonResponse({ error: 'Muse reply is too long.' }, 400);
+        if (replyError && replyError.length > 500) return jsonResponse({ error: 'Muse error is too long.' }, 400);
+        const rowParams = new URLSearchParams({
+          select: 'id,user_id,session_id,messages,status',
+          id: `eq.${queueId}`
+        });
+        const rowResponse = await fetch(supabaseUrl(env, 'lil_muse_queue', rowParams), { headers: supabaseHeaders(env) });
+        if (!rowResponse.ok) return jsonResponse({ error: 'Could not load the Muse request.' }, 502);
+        const rowRows = await rowResponse.json().catch(() => null);
+        if (!Array.isArray(rowRows) || rowRows.length === 0) return jsonResponse({ error: 'Muse request not found.' }, 404);
+        const row = rowRows[0];
+        if (row.status !== 'pending') return jsonResponse({ error: 'Muse request is no longer pending.' }, 409);
+        const completedAt = new Date().toISOString();
+        const newStatus = reply ? 'done' : 'error';
+        const updateResponse = await fetch(supabaseUrl(env, 'lil_muse_queue', new URLSearchParams({ id: `eq.${queueId}` })), {
+          method: 'PATCH',
+          headers: supabaseHeaders(env),
+          body: JSON.stringify({
+            status: newStatus,
+            reply: reply || null,
+            error: replyError || null,
+            completed_at: completedAt
+          })
+        });
+        if (!updateResponse.ok) return jsonResponse({ error: 'Could not save the Muse reply.' }, 502);
+        if (reply) {
+          // Best-effort transcript logging and usage counting: a
+          // failure here must not take the reply away from the user,
+          // who is already polling for it.
+          try {
+            const lastUser = Array.isArray(row.messages)
+              ? [...row.messages].reverse().find((m) => m && m.role === 'user' && typeof m.content === 'string')
+              : null;
+            const transcriptRows = [];
+            if (lastUser) {
+              transcriptRows.push({
+                user_id: row.user_id,
+                session_id: row.session_id || queueId,
+                source: 'muse-queue',
+                role: 'user',
+                model: 'muse',
+                content: lastUser.content,
+                message_timestamp: completedAt,
+                source_key: `${queueId}:user`
+              });
+            }
+            transcriptRows.push({
+              user_id: row.user_id,
+              session_id: row.session_id || queueId,
+              source: 'muse-queue',
+              role: 'assistant',
+              model: 'muse',
+              content: reply,
+              message_timestamp: completedAt,
+              source_key: `${queueId}:assistant`
+            });
+            await fetch(supabaseUrl(env, 'lil_transcripts'), {
+              method: 'POST',
+              headers: supabaseHeaders(env, { Prefer: 'return=minimal' }),
+              body: JSON.stringify(transcriptRows)
+            });
+          } catch (err) {
+            console.error('Lil Muse reply transcript logging failed:', err);
+          }
+          await recordLilUsage(env, { userId: row.user_id, usageType: 'chat', calls: 1, errors: 0 });
+        } else {
+          await recordLilUsage(env, { userId: row.user_id, usageType: 'chat', calls: 0, errors: 1 });
+        }
+        return jsonResponse({ ok: true, queue_id: queueId, status: newStatus });
+      } catch (err) {
+        console.error('Lil Muse queue reply failed:', err);
+        return jsonResponse({ error: 'Could not save the Muse reply.' }, 502);
       }
     }
     // Step 1.5 expanded scope, admin-only manual trigger for the global
@@ -3602,6 +3786,48 @@ export default {
           }
           // Step 1 pins the model: a client-supplied model name is validated
           // for shape but never used, so no request can reach the laptop.
+          // The one exception is Muse, handled just below.
+        }
+        // Muse model: chat only, admin only, queued — never inline.
+        // Muse (the personal assistant) has no public HTTP endpoint the
+        // Worker could call synchronously, and the bridge secret must
+        // never reach the browser, so the Worker does not forward to
+        // the bridge here. Instead it stores the prompt in
+        // lil_muse_queue and returns a queue id; the frontend polls
+        // for the reply, and the Muse-side bridge picks the row up and
+        // posts the reply back with the bridge secret (see the
+        // muse-queue routes below). The admin gate above already
+        // rejects non-admins with 401/403 before this point, so a
+        // crafted model=muse request from a member cannot queue.
+        const selectedModel = typeof payload?.model === 'string' ? payload.model.trim() : '';
+        if (selectedModel === 'muse') {
+          if (!isChatRequest || mode !== 'chat') {
+            return jsonResponse({ error: 'Muse is available for chat only.' }, 400);
+          }
+          const sessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim()
+            ? payload.sessionId.trim().slice(0, 500)
+            : null;
+          const insertResponse = await fetch(supabaseUrl(env, 'lil_muse_queue'), {
+            method: 'POST',
+            headers: supabaseHeaders(env, { Prefer: 'return=representation' }),
+            body: JSON.stringify({
+              user_id: auth.userId,
+              session_id: sessionId,
+              messages,
+              status: 'pending'
+            })
+          });
+          if (!insertResponse.ok) return jsonResponse({ error: 'Could not queue the Muse request.' }, 502);
+          const queueRows = await insertResponse.json().catch(() => null);
+          if (!Array.isArray(queueRows) || queueRows.length === 0 || !queueRows[0].id) {
+            return jsonResponse({ error: 'Could not queue the Muse request.' }, 502);
+          }
+          return jsonResponse({
+            queued: true,
+            queue_id: queueRows[0].id,
+            provider: 'muse-bridge',
+            model: 'muse'
+          });
         }
         // sessionId is accepted but ignored: Step 1.5 recall is keyed by
         // the signed-in user, not by a browser session, and no request
