@@ -5589,7 +5589,12 @@ html[data-system-font="true"] .story-provider-badge {
   scrollbar-width: thin;
   cursor: grab;
   overscroll-behavior: contain;
-  touch-action: pan-y;
+  /* pan-x AND pan-y: the strip scrolls horizontally, and the drag handler
+     only accepts mouse pointers, so pan-y alone left mobile swipes dead —
+     the browser would not scroll horizontally and JS ignored the touch.
+     Allowing pan-x lets the browser natively swipe-scroll the strip on
+     touch, while mouse drag keeps working. */
+  touch-action: pan-x pan-y;
   user-select: none;
 }
 
