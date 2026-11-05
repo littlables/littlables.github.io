@@ -138,6 +138,180 @@ test('POST /api/lil/search answers via Workers AI and logs per-user usage after 
   }
 });
 
+test('POST /api/lil/search grounds answers in balloons, Wikipedia and Serper results', async () => {
+  const originalFetch = globalThis.fetch;
+  let aiOptions;
+  let searchLogBody;
+  const seenHeaders = {};
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/rest/v1/lil_memories') {
+      return Response.json([]);
+    }
+    if (url.pathname === '/rest/v1/news_stories') {
+      return Response.json([
+        { id: 's1', provider: 'gnews', category: 'animals', title: 'Giant pandas eat bamboo all day', article_url: 'https://example.com/pandas', image_url: null, description: 'Pandas spend most of their day eating bamboo.', content: null, ai_summary: null, published_at: '2026-11-04T10:00:00Z', source_name: 'Example News', approved: true, removed: false, fetched_at: '2026-11-04T10:00:00Z' },
+        { id: 's2', provider: 'gnews', category: 'animals', title: 'Stock market crash wipes out gains', article_url: 'https://example.com/stocks', image_url: null, description: 'Markets fell sharply today.', content: null, ai_summary: null, published_at: '2026-11-04T10:00:00Z', source_name: 'Example News', approved: true, removed: false, fetched_at: '2026-11-04T10:00:00Z' }
+      ]);
+    }
+    if (url.hostname === 'en.wikipedia.org') {
+      seenHeaders.wikipedia = options.headers || {};
+      return Response.json({
+        query: {
+          pages: [{ title: 'Panda', extract: 'Pandas are bears.', canonicalurl: 'https://en.wikipedia.org/wiki/Panda' }]
+        }
+      });
+    }
+    if (url.hostname === 'google.serper.dev') {
+      seenHeaders.serper = options.headers || {};
+      return Response.json({
+        organic: [
+          { title: 'Panda facts', link: 'https://kids.example.com/pandas', snippet: 'Fun panda facts.', position: 1 },
+          { title: 'More pandas', link: 'https://example.org/pandas', snippet: 'Even more.', position: 2 }
+        ]
+      });
+    }
+    if (url.pathname === '/rest/v1/rpc/increment_lil_usage') {
+      return new Response(null, { status: 200 });
+    }
+    if (url.pathname === '/rest/v1/lil_search_log') {
+      searchLogBody = JSON.parse(options.body);
+      return new Response(null, { status: 201 });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer test-token'
+      },
+      body: JSON.stringify({ query: 'pandas' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SERPER_API_KEY: 'serper-test-key',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      AI: {
+        run: async (model, options) => {
+          aiOptions = options;
+          return {
+            choices: [{ message: { content: 'Pandas are bears that eat bamboo.' } }],
+            usage: { prompt_tokens: 50, completion_tokens: 9 }
+          };
+        }
+      }
+    }, {});
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.answer, 'Pandas are bears that eat bamboo.');
+    assert.equal(body.sources.length, 4);
+    assert.equal(body.sources[0].title, 'Giant pandas eat bamboo all day');
+    assert.deepEqual(body.searchQueries, ['Wikipedia: pandas', 'Serper: pandas']);
+    assert.match(body.apiKeyNotice, /Lil checked littlables balloons, Wikipedia and live web results for this answer\./);
+    // The flagged balloon never reaches the model or the sources.
+    assert.equal(body.sources.some((s) => s.title.includes('Stock market')), false);
+    // Grounding replaces the "no live web access" line in the prompt.
+    assert.match(aiOptions.messages[0].content, /Answer only from the sources below/);
+    assert.doesNotMatch(aiOptions.messages[0].content, /do not have live web access/);
+    assert.match(aiOptions.messages[0].content, /Giant pandas eat bamboo all day/);
+    assert.match(aiOptions.messages[0].content, /Pandas are bears\./);
+    // Headers prove the key and the User-Agent were actually sent.
+    assert.match(seenHeaders.wikipedia['User-Agent'], /littlables-lil/);
+    assert.equal(seenHeaders.serper['X-API-KEY'], 'serper-test-key');
+    // The audit log is metadata only.
+    assert.equal(searchLogBody.user_id, 'admin-user');
+    assert.deepEqual(searchLogBody.layers, ['balloons', 'wikipedia', 'serper']);
+    assert.equal(searchLogBody.balloons_count, 1);
+    assert.equal(searchLogBody.flagged_filtered, 1);
+    assert.equal(searchLogBody.result_urls.length, 4);
+    assert.equal(searchLogBody.status, 'ok');
+    const logText = JSON.stringify(searchLogBody);
+    assert.doesNotMatch(logText, /"title"/);
+    assert.doesNotMatch(logText, /"snippet"/);
+    assert.doesNotMatch(logText, /bamboo/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('POST /api/lil/search answers model-only when all web layers fail', async () => {
+  const originalFetch = globalThis.fetch;
+  let aiOptions;
+  let searchLogBody;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'admin-user', email: 'admin@example.com' });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ is_admin: true }]);
+    }
+    if (url.pathname === '/rest/v1/lil_memories') {
+      return Response.json([]);
+    }
+    if (url.pathname === '/rest/v1/news_stories') {
+      return new Response('nope', { status: 500 });
+    }
+    if (url.hostname === 'en.wikipedia.org') {
+      return new Response('nope', { status: 500 });
+    }
+    if (url.pathname === '/rest/v1/rpc/increment_lil_usage') {
+      return new Response(null, { status: 200 });
+    }
+    if (url.pathname === '/rest/v1/lil_search_log') {
+      searchLogBody = JSON.parse(options.body);
+      return new Response(null, { status: 201 });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/lil/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer test-token'
+      },
+      body: JSON.stringify({ query: 'pandas' })
+    }), {
+      SUPABASE_URL: 'https://supabase.example',
+      SUPABASE_SECRET_KEY: 'service-secret',
+      SUMMARY_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      AI: {
+        run: async (model, options) => {
+          aiOptions = options;
+          return {
+            choices: [{ message: { content: 'Pandas are bears.' } }],
+            usage: { prompt_tokens: 20, completion_tokens: 4 }
+          };
+        }
+      }
+    }, {});
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.answer, 'Pandas are bears.');
+    assert.deepEqual(body.sources, []);
+    assert.deepEqual(body.searchQueries, []);
+    assert.match(body.apiKeyNotice, /not checked against live web sources/);
+    assert.match(aiOptions.messages[0].content, /do not have live web access/);
+    assert.equal(searchLogBody.status, 'partial');
+    assert.deepEqual(searchLogBody.layers, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('POST /api/lil/search returns 503 when Workers AI is not bound', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
