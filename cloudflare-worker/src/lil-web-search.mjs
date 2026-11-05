@@ -13,7 +13,8 @@
  *      (`env.AI.websearch`, gateway `littlables-lil`, provider
  *      `ceramic`, BYOK alias `default` — Katie's own Ceramic key, stored
  *      on the gateway; the key itself never travels in the request).
- *      Runs when Wikipedia leaves the grounding thin, and gets the
+ *      Runs when Wikipedia leaves the grounding thin (under
+ *      `LIL_SEARCH_MIN_SOURCES` grounded sources), and gets the
  *      question's content keywords, not the full sentence — Ceramic is
  *      an exact-match engine, so a conversational question searches
  *      worse than keywords. Live-only, like Serper: Ceramic's own terms
@@ -21,10 +22,11 @@
  *      trimmed to 300 chars, the flagged filter applies, grounding text
  *      goes into the prompt only, and the log stays metadata-only.
  *   3. Serper — live Google results, only when Wikipedia + Ceramic are
- *      still thin (< 3 sources). Needs `SERPER_API_KEY` as a Worker
- *      secret; when it is absent the layer is skipped, never an error.
- *      Serper results are live-only in this experiment: no Serper
- *      title/snippet is stored anywhere (see `logLilSearch`).
+ *      still thin (under `LIL_SEARCH_MIN_SOURCES` sources). Needs
+ *      `SERPER_API_KEY` as a Worker secret; when it is absent the layer
+ *      is skipped, never an error. Serper results are live-only in this
+ *      experiment: no Serper title/snippet is stored anywhere (see
+ *      `logLilSearch`).
  *
  * Balloons ride along separately (2026-11-05, Katie: back burner — not
  * enough tagged content yet to ground answers): the site's own APPROVED
@@ -47,7 +49,13 @@
  * Katie-curated approved stories, and her approval outranks a domain
  * screen. A blocked result is dropped and counted in `flaggedFiltered`
  * alongside stem-filtered results — the log counts safety screens, it
- * does not distinguish which one fired.
+ * does not distinguish which one fired. Wikipedia results get one more
+ * screen, relevance (`isRelevantToKeywords`): an article whose title or
+ * extract shares no content keyword with the question is dropped and
+ * counted in `irrelevantFiltered`, so junk stops counting toward the
+ * minimum and the live layers get their turn. The domain blocklist
+ * cannot catch that class — wikipedia.org is a fine domain, the article
+ * is the problem (Hitachi Magic Wand, 2026-11-05).
  *
  * This module never throws: every failure is reported in the returned
  * `layerErrors` / `serperSkipped` fields so the handler can log it and
@@ -60,6 +68,12 @@ import { EXCLUDED_KEYWORD_IDS } from './interest-keywords.mjs';
 export const LIL_WIKIPEDIA_USER_AGENT =
   'littlables-lil/1.0 (https://littlables.com; contact hello@littlables.com)';
 export const LIL_SEARCH_MAX_SOURCES = 6;
+// Minimum grounded sources before the live layers stop: Wikipedia alone
+// returning 3 junk articles used to satisfy the old "3 is enough" gate,
+// so Serper — the layer that would have found real news — never ran
+// (2026-11-05 environmental question on prod). The layers now keep
+// running until 5 grounded sources or the cap of 6.
+export const LIL_SEARCH_MIN_SOURCES = 5;
 export const LIL_SEARCH_BALLOON_LIMIT = 5;
 export const LIL_SEARCH_WIKIPEDIA_LIMIT = 3;
 export const LIL_SEARCH_CERAMIC_LIMIT = 5;
@@ -154,6 +168,42 @@ export function isBlockedDomain(domain) {
     if (host === blocked || host.endsWith(`.${blocked}`)) return true;
   }
   return false;
+}
+
+// Relevance variants for the Wikipedia screen: the shared plural
+// variants, plus the singular for words ending in 's' — 'pandas' must
+// match an article titled 'Panda'. Words ending in 'ies' already get
+// their singular from keywordVariants ('stories' → 'story'), and short
+// words are excluded so 'news' never becomes 'new' and 'gas' never
+// becomes 'ga'.
+function relevanceVariants(word) {
+  const variants = [...keywordVariants(word)];
+  if (!word.endsWith('ies') && word.endsWith('s') && word.length > 4) {
+    variants.push(word.slice(0, -1));
+  }
+  return variants;
+}
+
+// Wikipedia relevance screen: keep a result only if its title or
+// extract shares at least one of the question's content keywords (or a
+// plural/singular variant) with the question. Wikipedia's full-text
+// search treats a conversational question as a bag of words — for the
+// 2026-11-05 environmental question it returned Elizabeth Berkley, a
+// Hitachi Magic Wand, and Machiavellianism, none of whose extracts
+// contains inspiring, positive, environmental, nature, or stories.
+// Empty keywords (a content-free question) match nothing, so Wikipedia
+// contributes nothing and the live layers get their turn. This is a
+// heuristic, not a guarantee: a loosely-related article whose extract
+// happens to contain one keyword still passes.
+export function isRelevantToKeywords(title, snippet, keywords) {
+  if (!Array.isArray(keywords) || keywords.length === 0) return false;
+  const text = `${title || ''} ${snippet || ''}`;
+  if (!text.trim()) return false;
+  return keywords.some((keyword) =>
+    relevanceVariants(keyword).some((variant) =>
+      new RegExp(`\\b${escapeRegExp(variant)}\\b`, 'i').test(text)
+    )
+  );
 }
 
 // Question words and filler: a natural-language question ("What new space
@@ -468,7 +518,7 @@ export async function searchApprovedBalloons(env, query, {
  *   `"Serper: <query>"` pills (balloons are the site's own content, not a
  *   web search, so they are not listed). Ceramic gets the content
  *   keywords, not the full question — it is an exact-match engine.
- * - `counts`: `{ balloons, wikipedia, ceramic, serper, flaggedFiltered }`.
+ * - `counts`: `{ balloons, wikipedia, ceramic, serper, flaggedFiltered, irrelevantFiltered }`.
  * - `layerErrors`: `{ <layer>: <error> }` for layers that failed.
  * - `serperSkipped`: `'no-key'` when Serper was skipped for want of a key,
  *   else null.
@@ -485,11 +535,14 @@ export async function searchLilWebSources(env, query, {
   const startedAt = Date.now();
   const merged = [];
   const balloonList = [];
-  const counts = { balloons: 0, wikipedia: 0, ceramic: 0, serper: 0, flaggedFiltered: 0 };
+  const counts = { balloons: 0, wikipedia: 0, ceramic: 0, serper: 0, flaggedFiltered: 0, irrelevantFiltered: 0 };
   const layerErrors = {};
   const layersUsed = [];
   const searchQueries = [];
   let serperSkipped = null;
+  // The question's content keywords, computed once: the Wikipedia
+  // relevance screen and the Ceramic query both use them.
+  const questionKeywords = extractSearchKeywords(query);
 
   const takeInto = (list, candidates, cap) => {
     let added = 0;
@@ -504,6 +557,13 @@ export async function searchLilWebSources(env, query, {
       }
       if (isFlaggedText(`${candidate.title} ${candidate.snippet || ''}`)) {
         counts.flaggedFiltered += 1;
+        continue;
+      }
+      // Relevance screen — Wikipedia only. Its full-text search returns
+      // junk for conversational questions, and a junk result must not
+      // count toward the minimum, or the live layers never run.
+      if (candidate.layer === 'wikipedia' && !isRelevantToKeywords(candidate.title, candidate.snippet, questionKeywords)) {
+        counts.irrelevantFiltered += 1;
         continue;
       }
       list.push(candidate);
@@ -544,11 +604,12 @@ export async function searchLilWebSources(env, query, {
   }
 
   // 2. Ceramic is the live fallback, only when the grounding is still
-  // thin — and it gets the content keywords, not the full question,
-  // because it is an exact-match engine. No keywords survive the
-  // stopword strip (e.g. "What is it?") → skip it silently.
-  if (merged.length < 3) {
-    const ceramicQuery = extractSearchKeywords(query).join(' ');
+  // thin (under LIL_SEARCH_MIN_SOURCES) — and it gets the content
+  // keywords, not the full question, because it is an exact-match
+  // engine. No keywords survive the stopword strip (e.g. "What is it?")
+  // → skip it silently.
+  if (merged.length < LIL_SEARCH_MIN_SOURCES) {
+    const ceramicQuery = questionKeywords.join(' ');
     if (ceramicQuery) {
       const ceramic = await searchCeramic(env, ceramicQuery, { limit: ceramicLimit });
       if (ceramic.error) {
@@ -564,8 +625,8 @@ export async function searchLilWebSources(env, query, {
   }
 
   // 3. Serper is the last live fallback, only when the grounding is
-  // still thin.
-  if (merged.length < 3) {
+  // still thin (under LIL_SEARCH_MIN_SOURCES).
+  if (merged.length < LIL_SEARCH_MIN_SOURCES) {
     const serper = await searchSerper(env, query, { limit: serperLimit });
     if (serper.skipped) {
       serperSkipped = serper.skipped;
@@ -624,6 +685,7 @@ export async function logLilSearch(env, {
         ceramic_count: counts.ceramic || 0,
         serper_count: counts.serper || 0,
         flagged_filtered: counts.flaggedFiltered || 0,
+        irrelevant_filtered: counts.irrelevantFiltered || 0,
         result_urls: Array.isArray(resultUrls) ? resultUrls : [],
         domains: Array.isArray(domains) ? domains : [],
         latency_ms: latencyMs || 0,
