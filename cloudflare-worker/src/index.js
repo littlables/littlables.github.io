@@ -3294,6 +3294,33 @@ async function serveAiStoryImage(request, env) {
   }
 }
 
+/**
+ * Log one lil chat turn pair to lil_transcripts, best effort.
+ * Used so lil chat bubbles repopulate from the server instead of the
+ * browser cache. Never throws: a logging failure leaves a gap in the
+ * server log but must never take the answer away. Rows carry a stable
+ * source_key per turn, so a retried log dedupes on the table's
+ * (user_id, source_key) unique index instead of duplicating.
+ */
+async function logLilChatTurnPair(env, { userId, sessionId, userContent, assistantContent, model, timestamp }) {
+  try {
+    if (!sessionId || !userContent || !assistantContent) return false;
+    const rows = [
+      { user_id: userId, session_id: sessionId, source: 'lil-chat', role: 'user', model: model || null, content: userContent, message_timestamp: timestamp, source_key: `${sessionId}:${timestamp}:user` },
+      { user_id: userId, session_id: sessionId, source: 'lil-chat', role: 'assistant', model: model || null, content: assistantContent, message_timestamp: timestamp, source_key: `${sessionId}:${timestamp}:assistant` }
+    ];
+    const response = await fetch(supabaseUrl(env, 'lil_transcripts'), {
+      method: 'POST',
+      headers: supabaseHeaders(env, { Prefer: 'return=minimal' }),
+      body: JSON.stringify(rows)
+    });
+    // 409 is the unique-index dedupe firing on a retry: already logged.
+    return response.ok || response.status === 409;
+  } catch {
+    return false;
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -3545,6 +3572,100 @@ export default {
       } catch (err) {
         console.error('Lil transcript import failed:', err);
         return jsonResponse({ error: 'Could not complete the Lil transcript import.' }, 502);
+      }
+    }
+    // Server-side lil chat logs: bubbles repopulate from lil_transcripts,
+    // not from the browser cache. Admin only, own rows only. The
+    // transcripts table is never used for recall and never injected
+    // into a prompt; these routes only read it back for display.
+    if (request.method === 'GET' && pathname === '/api/lil/transcripts') {
+      try {
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const sessionId = url.searchParams.get('session_id') || '';
+        if (!sessionId) return jsonResponse({ error: 'A session id is required.' }, 400);
+        const params = new URLSearchParams({
+          select: 'session_id,source,role,model,content,message_timestamp,source_key',
+          user_id: `eq.${auth.userId}`,
+          session_id: `eq.${sessionId}`,
+          order: 'message_timestamp.asc.nullslast,created_at.asc',
+          limit: '500'
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_transcripts', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load the lil chat log.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows)) return jsonResponse({ error: 'Could not load the lil chat log.' }, 502);
+        return jsonResponse({
+          session_id: sessionId,
+          messages: rows
+            .filter((row) => row && (row.role === 'user' || row.role === 'assistant') && typeof row.content === 'string')
+            .map((row) => ({ role: row.role, content: row.content }))
+        });
+      } catch (err) {
+        console.error('Lil transcripts read failed:', err);
+        return jsonResponse({ error: 'Could not load the lil chat log.' }, 502);
+      }
+    }
+    if (request.method === 'GET' && pathname === '/api/lil/transcripts/sessions') {
+      try {
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const params = new URLSearchParams({
+          select: 'session_id,role,content,message_timestamp,created_at',
+          user_id: `eq.${auth.userId}`,
+          order: 'message_timestamp.asc.nullslast,created_at.asc',
+          limit: '1000'
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_transcripts', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load lil chat sessions.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows)) return jsonResponse({ error: 'Could not load lil chat sessions.' }, 502);
+        const bySession = new Map();
+        for (const row of rows) {
+          if (!row || typeof row.session_id !== 'string' || !row.session_id) continue;
+          let session = bySession.get(row.session_id);
+          if (!session) {
+            session = { session_id: row.session_id, title: 'New chat', updatedAt: 0, messageCount: 0 };
+            bySession.set(row.session_id, session);
+          }
+          const when = Date.parse(row.message_timestamp || row.created_at || '') || 0;
+          if (when > session.updatedAt) session.updatedAt = when;
+          if (row.role === 'user' && typeof row.content === 'string' && session.title === 'New chat') {
+            session.title = row.content.length > 56 ? `${row.content.slice(0, 53).trimEnd()}…` : row.content;
+          }
+          session.messageCount += 1;
+        }
+        const sessions = [...bySession.values()]
+          .filter((session) => session.messageCount > 0)
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .slice(0, 30);
+        return jsonResponse({ sessions });
+      } catch (err) {
+        console.error('Lil transcript sessions read failed:', err);
+        return jsonResponse({ error: 'Could not load lil chat sessions.' }, 502);
+      }
+    }
+    if (request.method === 'GET' && pathname === '/api/lil/muse-queue/by-session') {
+      try {
+        const auth = await verifyTasteReaderAdmin(env, request);
+        if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
+        const sessionId = url.searchParams.get('session_id') || '';
+        if (!sessionId) return jsonResponse({ error: 'A session id is required.' }, 400);
+        const params = new URLSearchParams({
+          select: 'id,created_at',
+          user_id: `eq.${auth.userId}`,
+          session_id: `eq.${sessionId}`,
+          status: 'eq.pending',
+          order: 'created_at.asc'
+        });
+        const response = await fetch(supabaseUrl(env, 'lil_muse_queue', params), { headers: supabaseHeaders(env) });
+        if (!response.ok) return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+        const rows = await response.json().catch(() => null);
+        if (!Array.isArray(rows)) return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
+        return jsonResponse({ pending: rows.map((row) => ({ queue_id: row.id, created_at: row.created_at })) });
+      } catch (err) {
+        console.error('Lil muse queue by-session failed:', err);
+        return jsonResponse({ error: 'Could not load pending Muse requests.' }, 502);
       }
     }
     // Muse queue: the lil chat "Muse" model, admin only.
@@ -3882,6 +4003,26 @@ export default {
           calls: 1,
           errors: 0
         });
+        // Server-side chat log, chat section only: the turn pair is
+        // stored in lil_transcripts so bubbles repopulate from the
+        // server instead of the browser cache. Best effort and never
+        // blocking: a logging failure leaves a gap, not a lost answer.
+        // Muse turns are not logged here; the muse-queue reply route
+        // already logs those (source muse-queue) when the reply lands.
+        if (isChatRequest && mode === 'chat') {
+          const chatSessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim()
+            ? payload.sessionId.trim().slice(0, 500)
+            : null;
+          const lastUserContent = messages[messages.length - 1]?.content || '';
+          await logLilChatTurnPair(env, {
+            userId: auth.userId,
+            sessionId: chatSessionId,
+            userContent: lastUserContent,
+            assistantContent: answer,
+            model: LIL_WORKERS_AI_MODEL,
+            timestamp: new Date().toISOString()
+          });
+        }
         if (isChatRequest) {
           return jsonResponse({ reply: answer, answer, provider: 'workers-ai', model: LIL_WORKERS_AI_MODEL });
         }

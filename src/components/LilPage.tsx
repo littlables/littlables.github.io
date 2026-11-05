@@ -31,10 +31,9 @@ interface LilChatMessage {
   content: string;
 }
 
-interface LilChatConversation {
+interface LilChatSession {
   id: string;
   title: string;
-  messages: LilChatMessage[];
   updatedAt: number;
 }
 
@@ -43,7 +42,6 @@ type LilChatMode = 'chat' | 'code';
 type LilModelSection = 'search' | 'chat' | 'code' | 'games';
 type LilGameType = 'trivia' | 'memory' | WorksheetType;
 
-const LIL_CHAT_HISTORY_KEY = 'littlables_lil_chat_history';
 const MAX_SAVED_CHATS = 30;
 
 interface LilModel {
@@ -131,6 +129,15 @@ const LIL_MODELS_URL = import.meta.env.DEV
 const LIL_MUSE_QUEUE_URL = import.meta.env.DEV
   ? '/api/lil/muse-queue'
   : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/muse-queue`;
+const LIL_TRANSCRIPTS_URL = import.meta.env.DEV
+  ? '/api/lil/transcripts'
+  : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/transcripts`;
+const LIL_TRANSCRIPTS_SESSIONS_URL = import.meta.env.DEV
+  ? '/api/lil/transcripts/sessions'
+  : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/transcripts/sessions`;
+const LIL_MUSE_QUEUE_BY_SESSION_URL = import.meta.env.DEV
+  ? '/api/lil/muse-queue/by-session'
+  : `${NEWS_CONFIG.workerUrl.replace(/\/$/, '')}/api/lil/muse-queue/by-session`;
 const LIL_MODEL_PREFERENCES_KEY = 'littlables_lil_models';
 // Muse is a chat-only model: it appears in the chat dropdown and nowhere
 // else, and the Worker rejects model=muse for any other mode, so a
@@ -180,6 +187,41 @@ async function pollMuseQueueForReply(queueId: string): Promise<string> {
     // status pending: keep polling until the timeout above.
   }
   throw new MuseQueuePendingError(queueId);
+}
+
+async function fetchLilChatSessions(): Promise<LilChatSession[]> {
+  const response = await fetch(LIL_TRANSCRIPTS_SESSIONS_URL, { headers: await lilAuthHeaders() });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Could not load lil chats (${response.status}).`);
+  if (!Array.isArray(data.sessions)) return [];
+  return data.sessions
+    .filter((session: unknown): session is LilChatSession =>
+      !!session && typeof session === 'object' &&
+      typeof (session as LilChatSession).id === 'string' &&
+      typeof (session as LilChatSession).title === 'string' &&
+      Number.isFinite((session as LilChatSession).updatedAt))
+    .slice(0, MAX_SAVED_CHATS);
+}
+
+async function fetchLilChatMessages(sessionId: string): Promise<LilChatMessage[]> {
+  const response = await fetch(`${LIL_TRANSCRIPTS_URL}?session_id=${encodeURIComponent(sessionId)}`, { headers: await lilAuthHeaders() });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Could not load lil chat (${response.status}).`);
+  if (!Array.isArray(data.messages)) return [];
+  return data.messages
+    .filter((message: unknown): message is LilChatMessage =>
+      !!message && typeof message === 'object' &&
+      ['user', 'assistant'].includes((message as LilChatMessage).role) &&
+      typeof (message as LilChatMessage).content === 'string')
+    .map((message: LilChatMessage) => ({ role: message.role, content: message.content }));
+}
+
+async function fetchPendingMuseQueueId(sessionId: string): Promise<string | null> {
+  const response = await fetch(`${LIL_MUSE_QUEUE_BY_SESSION_URL}?session_id=${encodeURIComponent(sessionId)}`, { headers: await lilAuthHeaders() });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return null;
+  const pending = Array.isArray(data.pending) ? data.pending : [];
+  return typeof pending[0]?.queue_id === 'string' ? pending[0].queue_id : null;
 }
 
 async function requestLilChat(messages: LilChatMessage[], sessionId: string, mode: LilChatMode, model: string) {
@@ -241,24 +283,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
   });
   const [copied, setCopied] = useState(false);
   const [chatMessages, setChatMessages] = useState<LilChatMessage[]>([]);
-  const [chatHistory, setChatHistory] = useState<LilChatConversation[]>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(LIL_CHAT_HISTORY_KEY) || '[]');
-      if (!Array.isArray(saved)) return [];
-      return saved
-        .filter((item): item is LilChatConversation =>
-          !!item && typeof item.id === 'string' && typeof item.title === 'string' &&
-          Array.isArray(item.messages) && Number.isFinite(item.updatedAt) &&
-          item.messages.every((message: unknown) =>
-            !!message && typeof message === 'object' &&
-            ['user', 'assistant'].includes((message as LilChatMessage).role) &&
-            typeof (message as LilChatMessage).content === 'string'))
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, MAX_SAVED_CHATS);
-    } catch {
-      return [];
-    }
-  });
+  const [chatSessions, setChatSessions] = useState<LilChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [chatHistoryDragging, setChatHistoryDragging] = useState(false);
   const [chatDraft, setChatDraft] = useState('');
@@ -359,26 +384,39 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     } catch {}
   }, [searchHistory]);
 
-  useEffect(() => {
+  // Chat history lives on the server now, not in the browser cache:
+  // this loads the server sessions only. There is deliberately no
+  // browser-cache migration and no browser fallback — old browser
+  // chats simply do not carry over, and the server log starts fresh.
+  // A failed load leaves the sidebar empty until the next open.
+  const loadServerChatSessions = async () => {
     try {
-      localStorage.setItem(LIL_CHAT_HISTORY_KEY, JSON.stringify(chatHistory));
-    } catch {}
-  }, [chatHistory]);
+      setChatSessions(await fetchLilChatSessions());
+    } catch {
+      setChatSessions([]);
+    }
+  };
+
+  useEffect(() => {
+    void loadServerChatSessions();
+  }, []);
 
   const saveChatConversation = (id: string, messages: LilChatMessage[]) => {
+    // Local state only: the server is the store (the Worker logs
+    // Workers AI turns, the muse-queue reply route logs Muse turns).
+    // Nothing here writes chat history back to localStorage.
     if (messages.length === 0) {
-      setChatHistory((current) => current.filter((conversation) => conversation.id !== id));
+      setChatSessions((current) => current.filter((session) => session.id !== id));
       return;
     }
     const firstUserMessage = messages.find((message) => message.role === 'user')?.content || 'New chat';
-    const conversation: LilChatConversation = {
+    const session: LilChatSession = {
       id,
       title: firstUserMessage.length > 56 ? `${firstUserMessage.slice(0, 53).trimEnd()}…` : firstUserMessage,
-      messages,
       updatedAt: Date.now(),
     };
-    setChatHistory((current) => [
-      conversation,
+    setChatSessions((current) => [
+      session,
       ...current.filter((item) => item.id !== id),
     ].slice(0, MAX_SAVED_CHATS));
   };
@@ -390,15 +428,30 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     setChatMessages([]);
     setChatDraft('');
     setChatError(null);
+    setPendingMuseQueueId(null);
   };
 
-  const openChatConversation = (conversation: LilChatConversation) => {
+  const openChatConversation = async (session: LilChatSession) => {
     if (chatLoading) return;
-    setActiveChatId(conversation.id);
-    sessionIdRef.current = conversation.id;
-    setChatMessages(conversation.messages);
+    setActiveChatId(session.id);
+    sessionIdRef.current = session.id;
     setChatDraft('');
     setChatError(null);
+    setPendingMuseQueueId(null);
+    try {
+      const messages = await fetchLilChatMessages(session.id);
+      setChatMessages(messages);
+      // Restore a still-pending Muse reply for this conversation, so
+      // a reload no longer strands the Check button.
+      const pendingQueueId = await fetchPendingMuseQueueId(session.id);
+      if (pendingQueueId) {
+        setPendingMuseQueueId(pendingQueueId);
+        setChatError('Muse has not replied yet. Your prompt is still queued.');
+      }
+    } catch {
+      setChatMessages([]);
+      setChatError('Could not load that lil chat from the server. Please try again.');
+    }
   };
 
   const loadLilModels = async () => {
@@ -1136,9 +1189,9 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
           <aside className="lil-chat-history" aria-label="Chat history">
             <div className="lil-chat-history-heading">
               <h3>Recent chats</h3>
-              <span>{chatHistory.length}</span>
+              <span>{chatSessions.length}</span>
             </div>
-            {chatHistory.length === 0 ? (
+            {chatSessions.length === 0 ? (
               <p className="lil-chat-history-empty">Your chats will appear here.</p>
             ) : (
               <div
@@ -1150,19 +1203,19 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
                 onPointerCancel={handleChatHistoryPointerUp}
                 onClickCapture={handleChatHistoryClickCapture}
               >
-                {chatHistory.map((conversation) => (
+                {chatSessions.map((session) => (
                   <button
-                    key={conversation.id}
+                    key={session.id}
                     type="button"
-                    className={`lil-chat-history-item${activeChatId === conversation.id ? ' active' : ''}`}
-                    onClick={() => openChatConversation(conversation)}
+                    className={`lil-chat-history-item${activeChatId === session.id ? ' active' : ''}`}
+                    onClick={() => void openChatConversation(session)}
                     disabled={chatLoading}
-                    aria-pressed={activeChatId === conversation.id}
-                    title={conversation.title}
+                    aria-pressed={activeChatId === session.id}
+                    title={session.title}
                   >
-                    <span className="lil-chat-history-title">{conversation.title}</span>
-                    <time dateTime={new Date(conversation.updatedAt).toISOString()}>
-                      {new Date(conversation.updatedAt).toLocaleString()}
+                    <span className="lil-chat-history-title">{session.title}</span>
+                    <time dateTime={new Date(session.updatedAt).toISOString()}>
+                      {new Date(session.updatedAt).toLocaleString()}
                     </time>
                   </button>
                 ))}
