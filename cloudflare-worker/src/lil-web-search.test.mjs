@@ -9,6 +9,7 @@ import {
   searchLilWebSources,
   logLilSearch,
   isFlaggedText,
+  isBlockedDomain,
   extractSearchKeywords,
   trimText,
   domainOf,
@@ -81,6 +82,31 @@ test('isFlaggedText flags excluded topics and passes clean kids topics', () => {
   }
   assert.equal(isFlaggedText(''), false);
   assert.equal(isFlaggedText(null), false);
+});
+
+test('isBlockedDomain matches the domain and its subdomains, and nothing else', () => {
+  for (const blocked of [
+    'theblackvault.com',
+    'www.theblackvault.com',
+    'news.theblackvault.com',
+    'INFOWARS.COM',
+    'www.naturalnews.com',
+    'theonion.com'
+  ]) {
+    assert.equal(isBlockedDomain(blocked), true, blocked);
+  }
+  for (const clean of [
+    'example.com',
+    'theblackvault.com.evil.com',
+    'nottheblackvault.com',
+    'mytheonion.com',
+    'wikipedia.org',
+    '',
+    null,
+    undefined
+  ]) {
+    assert.equal(isBlockedDomain(clean), false, String(clean));
+  }
 });
 
 test('trimText and domainOf handle the small cases', () => {
@@ -503,6 +529,54 @@ test('searchLilWebSources JWST regression: Wikipedia grounds, space balloons rid
     assert.equal(result.sources.some((s) => /Zelensky|killed|bear attack/i.test(s.title)), false);
     assert.equal(result.balloons.some((s) => /Zelensky|killed|bear attack/i.test(s.title)), false);
     assert.deepEqual(calledHosts, ['supabase.example', 'en.wikipedia.org', 'google.serper.dev']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('searchLilWebSources drops blocked domains from web layers but keeps an approved balloon from one', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/rest/v1/news_stories') {
+      return Response.json([
+        // Approved by Katie, so the domain screen must not touch it —
+        // her curation outranks the blocklist.
+        balloonRow({ id: 's1', title: 'Webb finds a new galaxy', article_url: 'https://theblackvault.com/webb-galaxy', interest_keywords: ['space'] })
+      ]);
+    }
+    if (url.hostname === 'en.wikipedia.org') {
+      return Response.json({
+        query: {
+          pages: [{ title: 'James Webb Space Telescope', extract: 'The James Webb Space Telescope is a space telescope.', canonicalurl: 'https://en.wikipedia.org/wiki/James_Webb_Space_Telescope' }]
+        }
+      });
+    }
+    if (url.hostname === 'google.serper.dev') {
+      return Response.json({
+        organic: [
+          { title: 'Scientists confirm the Moon is made of cheese', link: 'https://theonion.com/moon-cheese', snippet: 'A shocking discovery.' },
+          { title: 'Webb telescope images a distant nebula', link: 'https://example.com/serper-webb', snippet: 'New images from Webb.' }
+        ]
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+  try {
+    const result = await searchLilWebSources(ceramicEnv([
+      { title: 'NASA Denies Existence of Classified Briefings on James Webb Telescope Discoveries', url: 'https://theblackvault.com/nasa-briefings', description: 'NASA says there are no classified briefings.' },
+      { title: 'James Webb telescope spots water vapor', url: 'https://example.com/ceramic-webb', description: 'Webb found water vapor on a distant world.' }
+    ]), 'What new space discoveries happened recently from the James Webb telescope?');
+    // The blocked Ceramic result (theblackvault.com) and the blocked
+    // Serper result (theonion.com) never reach the grounding; the clean
+    // result from each layer does. The approved balloon from
+    // theblackvault.com rides along untouched.
+    assert.equal(result.sources.length, 3);
+    assert.equal(result.sources.some((s) => isBlockedDomain(s.domain)), false);
+    assert.deepEqual(result.sources.map((s) => s.domain), ['wikipedia.org', 'example.com', 'example.com']);
+    assert.deepEqual(result.balloons.map((b) => b.domain), ['theblackvault.com']);
+    assert.deepEqual(result.layersUsed, ['wikipedia', 'ceramic', 'serper']);
+    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 1, ceramic: 1, serper: 1, flaggedFiltered: 2 });
   } finally {
     globalThis.fetch = originalFetch;
   }

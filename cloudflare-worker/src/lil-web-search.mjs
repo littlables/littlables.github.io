@@ -39,7 +39,15 @@
  * (stocks, crypto, business, death, politics, elections, government,
  * clickbait) before the model sees them, and the model prompt stays
  * age-appropriate. Wikipedia is not written for children, so its extracts
- * are capped and the flagged filter applies to them too.
+ * are capped and the flagged filter applies to them too. Web-layer results
+ * are also screened against a small domain blocklist (`BLOCKED_DOMAINS` —
+ * conspiracy/misinformation sites and satire presented as news, starting
+ * with theblackvault.com, the site Ceramic surfaced in the 2026-11-05
+ * JWST retest). The blocklist does NOT apply to balloons: those are
+ * Katie-curated approved stories, and her approval outranks a domain
+ * screen. A blocked result is dropped and counted in `flaggedFiltered`
+ * alongside stem-filtered results — the log counts safety screens, it
+ * does not distinguish which one fired.
  *
  * This module never throws: every failure is reported in the returned
  * `layerErrors` / `serperSkipped` fields so the handler can log it and
@@ -121,6 +129,31 @@ export function domainOf(url) {
   } catch {
     return '';
   }
+}
+
+// Domain blocklist for the WEB layers only (Wikipedia, Ceramic, Serper).
+// These are sites whose results should never ground a child's answer,
+// whatever the query: conspiracy/misinformation outlets and satire
+// presented as news. The flagged-stem filter cannot catch them — a
+// theblackvault.com headline about "classified briefings" carries no
+// flagged word. To add a domain, add one line here; subdomains are
+// covered automatically. Balloons are exempt (see the module header):
+// Katie's approval of a story outranks a domain screen.
+export const BLOCKED_DOMAINS = Object.freeze(new Set([
+  'theblackvault.com', // conspiracy / UFO document site — the observed case (2026-11-05 JWST retest)
+  'infowars.com', // conspiracy and misinformation
+  'naturalnews.com', // health misinformation
+  'beforeitsnews.com', // conspiracy aggregator
+  'theonion.com' // satire presented as news — a model can mistake it for real reporting
+]));
+
+export function isBlockedDomain(domain) {
+  if (typeof domain !== 'string' || !domain) return false;
+  const host = domain.toLowerCase().replace(/^www\./, '');
+  for (const blocked of BLOCKED_DOMAINS) {
+    if (host === blocked || host.endsWith(`.${blocked}`)) return true;
+  }
+  return false;
 }
 
 // Question words and filler: a natural-language question ("What new space
@@ -463,6 +496,12 @@ export async function searchLilWebSources(env, query, {
     for (const candidate of candidates) {
       if (list.length >= cap) break;
       if (!candidate) continue;
+      // Domain screen — web layers only. Balloons are Katie-curated and
+      // exempt: her approval outranks a domain screen.
+      if (candidate.layer !== 'balloons' && isBlockedDomain(candidate.domain)) {
+        counts.flaggedFiltered += 1;
+        continue;
+      }
       if (isFlaggedText(`${candidate.title} ${candidate.snippet || ''}`)) {
         counts.flaggedFiltered += 1;
         continue;

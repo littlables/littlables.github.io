@@ -211,6 +211,8 @@ test('POST /api/lil/search grounds answers in Wikipedia, Ceramic and Serper resu
         },
         websearch: async () => Response.json({
           items: [
+            // Clean title, blocked domain — only the domain screen drops it.
+            { title: 'Pandas: the classified files', url: 'https://theblackvault.com/panda-files', description: 'Secret panda files.' },
             { title: 'Ceramic panda facts', url: 'https://example.com/ceramic-pandas', description: 'Ceramic panda facts.' }
           ],
           metadata: { query: 'pandas', requestId: 'req-1', latencyMs: 42 }
@@ -233,6 +235,9 @@ test('POST /api/lil/search grounds answers in Wikipedia, Ceramic and Serper resu
     // The flagged balloon never reaches the model, the sources, or the balloons.
     assert.equal(body.sources.some((s) => s.title.includes('Stock market')), false);
     assert.equal(body.balloons.some((s) => s.title.includes('Stock market')), false);
+    // The blocked-domain Ceramic result never reaches the model or the sources.
+    assert.equal(body.sources.some((s) => s.domain === 'theblackvault.com'), false);
+    assert.doesNotMatch(aiOptions.messages[0].content, /classified files/);
     // Grounding replaces the "no live web access" line in the prompt.
     assert.match(aiOptions.messages[0].content, /Answer only from the sources below/);
     assert.doesNotMatch(aiOptions.messages[0].content, /do not have live web access/);
@@ -248,7 +253,7 @@ test('POST /api/lil/search grounds answers in Wikipedia, Ceramic and Serper resu
     assert.deepEqual(searchLogBody.layers, ['wikipedia', 'ceramic', 'serper']);
     assert.equal(searchLogBody.balloons_count, 1);
     assert.equal(searchLogBody.ceramic_count, 1);
-    assert.equal(searchLogBody.flagged_filtered, 1);
+    assert.equal(searchLogBody.flagged_filtered, 2);
     assert.equal(searchLogBody.result_urls.length, 5);
     assert.equal(searchLogBody.status, 'ok');
     const logText = JSON.stringify(searchLogBody);
