@@ -249,7 +249,7 @@ test('GET /api/lil/models requires admin authentication', async () => {
   assert.equal((await response.json()).error, 'Supabase sign-in is required');
 });
 
-test('GET /api/lil/models returns the pinned Workers AI model for admins', async () => {
+test('GET /api/lil/models returns the pinned Workers AI model plus Muse for admins', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = new URL(String(input));
@@ -274,7 +274,10 @@ test('GET /api/lil/models returns the pinned Workers AI model for admins', async
 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
-      models: [{ id: '@cf/meta/llama-3.2-3b-instruct', name: 'Llama 3.2 3B' }],
+      models: [
+        { id: '@cf/meta/llama-3.2-3b-instruct', name: 'Llama 3.2 3B' },
+        { id: 'muse', name: 'Muse' }
+      ],
       defaultModel: '@cf/meta/llama-3.2-3b-instruct'
     });
     assert.equal(response.headers.get('Cache-Control'), 'no-store');
