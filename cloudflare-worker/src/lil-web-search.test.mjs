@@ -10,6 +10,7 @@ import {
   logLilSearch,
   isFlaggedText,
   isBlockedDomain,
+  isRelevantToKeywords,
   extractSearchKeywords,
   trimText,
   domainOf,
@@ -107,6 +108,29 @@ test('isBlockedDomain matches the domain and its subdomains, and nothing else', 
   ]) {
     assert.equal(isBlockedDomain(clean), false, String(clean));
   }
+});
+
+test('isRelevantToKeywords keeps on-topic Wikipedia results and drops the 2026-11-05 junk', () => {
+  const jwst = ['space', 'discoveries', 'james', 'webb', 'telescope'];
+  const env = ['inspiring', 'positive', 'environmental', 'nature', 'stories'];
+  // On-topic: the title or the extract shares a keyword.
+  assert.equal(isRelevantToKeywords('James Webb Space Telescope', 'The James Webb Space Telescope is a space telescope.', jwst), true);
+  assert.equal(isRelevantToKeywords('New Horizons', "New Horizons is an interplanetary space probe that was launched as a part of NASA's New Frontiers program.", jwst), true);
+  // Loose but real: Chronology of the universe shares no JWST keyword,
+  // so it drops — that is the screen working, not a miss.
+  assert.equal(isRelevantToKeywords('Chronology of the universe', 'The chronology of the universe describes the history and future of the universe.', jwst), false);
+  // The environmental question's live junk, with the real extracts
+  // Wikipedia returned — none shares a keyword with the question.
+  assert.equal(isRelevantToKeywords('Hitachi Magic Wand', 'The Magic Wand (formerly known as the Hitachi Magic Wand) is an AC-powered wand vibrator. It was originally manufactured for relieving tension and relaxing sore muscles.', env), false);
+  assert.equal(isRelevantToKeywords('2021 in science', 'This is a list of several significant scientific events that occurred or were scheduled to occur in 2021.', env), false);
+  assert.equal(isRelevantToKeywords('Machiavellianism (psychology)', 'In the field of personality psychology, Machiavellianism (sometimes abbreviated as MACH) is the name of a personality trait construct characterized by manipulativeness, callousness, and indifference to morality.', env), false);
+  // Singular: 'pandas' matches an article titled 'Panda'.
+  assert.equal(isRelevantToKeywords('Panda', 'Bears that eat bamboo.', ['pandas']), true);
+  // But 'news' never becomes 'new'.
+  assert.equal(isRelevantToKeywords('New Horizons', 'New images from the probe.', ['news']), false);
+  // Empty keywords or empty text match nothing.
+  assert.equal(isRelevantToKeywords('Panda', 'Pandas are bears.', []), false);
+  assert.equal(isRelevantToKeywords('', '', ['pandas']), false);
 });
 
 test('trimText and domainOf handle the small cases', () => {
@@ -288,7 +312,7 @@ test('searchLilWebSources keeps balloons out of grounding; Wikipedia and Serper 
     assert.deepEqual(result.balloons.map((b) => b.title), ['Giant pandas eat bamboo all day']);
     assert.deepEqual(result.layersUsed, ['wikipedia', 'serper']);
     assert.deepEqual(result.searchQueries, ['Wikipedia: pandas', 'Ceramic: pandas', 'Serper: pandas']);
-    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 1, ceramic: 0, serper: 2, flaggedFiltered: 1 });
+    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 1, ceramic: 0, serper: 2, flaggedFiltered: 1, irrelevantFiltered: 0 });
     assert.deepEqual(result.layerErrors, {});
     assert.equal(result.serperSkipped, null);
     assert.equal(typeof result.latencyMs, 'number');
@@ -354,7 +378,7 @@ test('searchLilWebSources fails open when every layer fails', async () => {
     assert.deepEqual(result.sources, []);
     assert.deepEqual(result.balloons, []);
     assert.deepEqual(result.grounding, []);
-    assert.deepEqual(result.counts, { balloons: 0, wikipedia: 0, ceramic: 0, serper: 0, flaggedFiltered: 0 });
+    assert.deepEqual(result.counts, { balloons: 0, wikipedia: 0, ceramic: 0, serper: 0, flaggedFiltered: 0, irrelevantFiltered: 0 });
     // Unlike the old searchNewsStories path (which swallowed its own
     // failures), searchApprovedBalloons reports its error, so both failed
     // layers show up here — plus Ceramic, whose binding is missing from
@@ -525,7 +549,7 @@ test('searchLilWebSources JWST regression: Wikipedia grounds, space balloons rid
       'Ceramic: space discoveries james webb telescope',
       'Serper: What new space discoveries happened recently from the James Webb telescope?'
     ]);
-    assert.deepEqual(result.counts, { balloons: 2, wikipedia: 1, ceramic: 1, serper: 0, flaggedFiltered: 2 });
+    assert.deepEqual(result.counts, { balloons: 2, wikipedia: 1, ceramic: 1, serper: 0, flaggedFiltered: 2, irrelevantFiltered: 0 });
     assert.equal(result.sources.some((s) => /Zelensky|killed|bear attack/i.test(s.title)), false);
     assert.equal(result.balloons.some((s) => /Zelensky|killed|bear attack/i.test(s.title)), false);
     assert.deepEqual(calledHosts, ['supabase.example', 'en.wikipedia.org', 'google.serper.dev']);
@@ -576,7 +600,104 @@ test('searchLilWebSources drops blocked domains from web layers but keeps an app
     assert.deepEqual(result.sources.map((s) => s.domain), ['wikipedia.org', 'example.com', 'example.com']);
     assert.deepEqual(result.balloons.map((b) => b.domain), ['theblackvault.com']);
     assert.deepEqual(result.layersUsed, ['wikipedia', 'ceramic', 'serper']);
-    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 1, ceramic: 1, serper: 1, flaggedFiltered: 2 });
+    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 1, ceramic: 1, serper: 1, flaggedFiltered: 2, irrelevantFiltered: 0 });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('searchLilWebSources drops irrelevant Wikipedia results so the live layers run (environmental question)', async () => {
+  const originalFetch = globalThis.fetch;
+  const query = 'What are the most inspiring positive environmental and nature news stories lately?';
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/rest/v1/news_stories') {
+      return Response.json([
+        balloonRow({ id: 's1', title: 'Nature reserve opens for injured wildlife', article_url: 'https://example.com/nature-reserve', description: 'A new reserve gives injured wildlife a safe home.', interest_keywords: [] })
+      ]);
+    }
+    if (url.hostname === 'en.wikipedia.org') {
+      // The exact junk Wikipedia returned live for this question.
+      return Response.json({
+        query: {
+          pages: [
+            { title: 'Hitachi Magic Wand', extract: 'The Magic Wand (formerly known as the Hitachi Magic Wand) is an AC-powered wand vibrator. It was originally manufactured for relieving tension and relaxing sore muscles.', canonicalurl: 'https://en.wikipedia.org/wiki/Hitachi_Magic_Wand' },
+            { title: '2021 in science', extract: 'This is a list of several significant scientific events that occurred or were scheduled to occur in 2021.', canonicalurl: 'https://en.wikipedia.org/wiki/2021_in_science' },
+            { title: 'Machiavellianism (psychology)', extract: 'In the field of personality psychology, Machiavellianism (sometimes abbreviated as MACH) is the name of a personality trait construct characterized by manipulativeness, callousness, and indifference to morality.', canonicalurl: 'https://en.wikipedia.org/wiki/Machiavellianism_(psychology)' }
+          ]
+        }
+      });
+    }
+    if (url.hostname === 'google.serper.dev') {
+      return Response.json({
+        organic: [
+          { title: 'Renewable energy grows', link: 'https://example.org/renewables', snippet: 'Solar power keeps growing.', position: 1 },
+          { title: 'Wildlife numbers recover', link: 'https://example.org/wildlife', snippet: 'Conservation helps wildlife recover.', position: 2 }
+        ]
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+  try {
+    const result = await searchLilWebSources(ceramicEnv([
+      { title: 'New tree planting project restores forests', url: 'https://example.com/tree-planting', description: 'Volunteers planted a million trees.' },
+      { title: 'Ocean cleanup removes plastic', url: 'https://kids.example.com/ocean-cleanup', description: 'A cleanup crew removed plastic from the ocean.' }
+    ]), query);
+    // All three Wikipedia results are dropped by the relevance screen,
+    // so the grounding is live-only — and because the count no longer
+    // hits the minimum on junk, both live layers run.
+    assert.equal(result.sources.length, 4);
+    assert.equal(result.sources.some((s) => s.domain === 'wikipedia.org'), false);
+    assert.deepEqual(result.layersUsed, ['ceramic', 'serper']);
+    assert.deepEqual(result.searchQueries, [
+      `Wikipedia: ${query}`,
+      'Ceramic: inspiring positive environmental nature stories',
+      `Serper: ${query}`
+    ]);
+    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 0, ceramic: 2, serper: 2, flaggedFiltered: 0, irrelevantFiltered: 3 });
+    assert.deepEqual(result.balloons.map((b) => b.title), ['Nature reserve opens for injured wildlife']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('searchLilWebSources keeps running live layers until 5 grounded sources', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/rest/v1/news_stories') {
+      return Response.json([balloonRow()]);
+    }
+    if (url.hostname === 'en.wikipedia.org') {
+      return Response.json({
+        query: {
+          pages: [
+            { title: 'Panda', extract: 'Pandas are bears.', canonicalurl: 'https://en.wikipedia.org/wiki/Panda' },
+            { title: 'Giant panda', extract: 'The giant panda is a bear species.', canonicalurl: 'https://en.wikipedia.org/wiki/Giant_panda' },
+            { title: 'Red panda', extract: 'The red panda is a small mammal.', canonicalurl: 'https://en.wikipedia.org/wiki/Red_panda' }
+          ]
+        }
+      });
+    }
+    if (url.hostname === 'google.serper.dev') {
+      return Response.json({
+        organic: [{ title: 'More panda news', link: 'https://example.org/panda-news', snippet: 'Pandas in the news.', position: 1 }]
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+  try {
+    const result = await searchLilWebSources(ceramicEnv([
+      { title: 'Panda conservation wins', url: 'https://example.com/panda-win', description: 'Panda numbers are up.' }
+    ]), 'pandas');
+    // Three good Wikipedia results used to satisfy the old "3 is
+    // enough" gate and stop the live layers. Now they keep running
+    // until 5 grounded sources: Ceramic adds one, Serper adds one.
+    assert.equal(result.sources.length, 5);
+    assert.deepEqual(result.sources.map((s) => s.title), ['Panda', 'Giant panda', 'Red panda', 'Panda conservation wins', 'More panda news']);
+    assert.deepEqual(result.layersUsed, ['wikipedia', 'ceramic', 'serper']);
+    assert.deepEqual(result.searchQueries, ['Wikipedia: pandas', 'Ceramic: pandas', 'Serper: pandas']);
+    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 3, ceramic: 1, serper: 1, flaggedFiltered: 0, irrelevantFiltered: 0 });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -606,7 +727,7 @@ test('searchLilWebSources balloons never ground the answer when the web layers f
     assert.deepEqual(result.balloons.map((b) => b.title), ['Giant pandas eat bamboo all day']);
     assert.deepEqual(result.layersUsed, []);
     assert.deepEqual(result.searchQueries, ['Wikipedia: pandas']);
-    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 0, ceramic: 0, serper: 0, flaggedFiltered: 0 });
+    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 0, ceramic: 0, serper: 0, flaggedFiltered: 0, irrelevantFiltered: 0 });
     assert.deepEqual(result.layerErrors, { ceramic: 'unavailable' });
     assert.equal(result.serperSkipped, 'no-key');
   } finally {
@@ -698,6 +819,7 @@ test('logLilSearch stores metadata only — never a title, description, or snipp
     assert.equal(seenBody.balloons_count, 1);
     assert.equal(seenBody.ceramic_count, 0);
     assert.equal(seenBody.flagged_filtered, 1);
+    assert.equal(seenBody.irrelevant_filtered, 0);
     assert.deepEqual(seenBody.result_urls, ['https://example.com/pandas', 'https://en.wikipedia.org/wiki/Panda']);
     // The payload must carry no result text at all.
     const bodyText = JSON.stringify(seenBody);

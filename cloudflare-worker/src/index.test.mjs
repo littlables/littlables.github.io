@@ -254,6 +254,7 @@ test('POST /api/lil/search grounds answers in Wikipedia, Ceramic and Serper resu
     assert.equal(searchLogBody.balloons_count, 1);
     assert.equal(searchLogBody.ceramic_count, 1);
     assert.equal(searchLogBody.flagged_filtered, 2);
+    assert.equal(searchLogBody.irrelevant_filtered, 0);
     assert.equal(searchLogBody.result_urls.length, 5);
     assert.equal(searchLogBody.status, 'ok');
     const logText = JSON.stringify(searchLogBody);
