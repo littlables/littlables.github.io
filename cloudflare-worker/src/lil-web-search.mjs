@@ -5,8 +5,12 @@
  * model-only. Layers run in priority order and every layer fails open, so a
  * provider outage degrades to fewer sources, never to a lost answer:
  *
- *   1. littlables balloons — the site's own curated stories in Supabase,
- *      via `searchNewsStories` (free, already kid-curated).
+ *   1. littlables balloons — the site's own APPROVED stories in Supabase
+ *      (free, Katie-curated; unapproved raw ingest never reaches a child).
+ *      The question is reduced to content keywords first — a raw question
+ *      fed to the generic keyword feed matches stopwords like `what`/`new`
+ *      and returns the newest stories on any topic, which is exactly the
+ *      bug the 2026-11-05 JWST live test caught.
  *   2. Wikipedia — live lookup via the Action API. Wikipedia text is
  *      CC BY-SA, so extracts may be kept and re-served with attribution
  *      (the source link is the attribution); a descriptive User-Agent is
@@ -28,7 +32,8 @@
  * still answer.
  */
 
-import { searchNewsStories, supabaseUrl, supabaseHeaders } from './news-storage.mjs';
+import { STORIES_TABLE, supabaseUrl, supabaseHeaders } from './news-storage.mjs';
+import { EXCLUDED_KEYWORD_IDS } from './interest-keywords.mjs';
 
 export const LIL_WIKIPEDIA_USER_AGENT =
   'littlables-lil/1.0 (https://littlables.com; contact hello@littlables.com)';
@@ -48,12 +53,18 @@ export const LIL_SEARCH_TEXT_LIMITS = Object.freeze({
 // death, politics, elections, government). Word-boundary matching, so
 // "crypto" does not flag "cryptography" and "stocks" does not flag
 // "livestock". This is a coarse screen for search results, not the
-// embedding classifier — the filtered-out count is logged, not hidden.
+// "shot"/"shooting" are deliberately absent: "flu shots" and "shooting
+// stars" are ordinary kids' topics, and the classification screen in
+// searchApprovedBalloons catches violent uses instead. This is a coarse
+// screen for search results, not the embedding classifier — the
+// filtered-out count is logged, not hidden.
 const FLAGGED_STEMS = [
   'stock market', 'stock price', 'stocks', 'stock',
   'cryptocurrency', 'crypto', 'bitcoin', 'blockchain',
   'investing', 'earnings', 'merger', 'acquisition', 'layoff',
   'obituary', 'obituaries', 'murder', 'fatal', 'death',
+  'killed', 'killing', 'dead', 'dies', 'died', 'deadly', 'deceased',
+  'stabbed', 'suicide', 'homicide', 'assault',
   'election', 'voting', 'candidate', 'politician', 'political',
   'government', 'senate', 'congress', 'parliament',
   'clickbait'
@@ -85,6 +96,53 @@ export function domainOf(url) {
   } catch {
     return '';
   }
+}
+
+// Question words and filler: a natural-language question ("What new space
+// discoveries happened recently...?") is mostly words that match everything
+// (`what`, `new`, `news`) or nothing (the whole sentence as one term). Only
+// the content words go into the balloon query. Words under 3 letters are
+// dropped by the length check, so they need no entry here.
+const SEARCH_STOP_WORDS = new Set([
+  'what', 'when', 'where', 'which', 'who', 'why', 'how',
+  'the', 'and', 'for', 'that', 'with', 'this', 'from', 'have', 'has', 'had',
+  'are', 'was', 'were', 'will', 'would', 'could', 'should',
+  'about', 'into', 'over', 'after', 'before', 'under', 'between', 'through',
+  'during', 'while', 'their', 'there', 'these', 'those', 'they', 'them',
+  'then', 'than', 'some', 'such', 'more', 'most', 'other', 'only', 'also',
+  'just', 'like', 'make', 'made', 'many', 'much', 'very', 'your', 'our',
+  'new', 'news', 'says', 'said', 'report', 'reports', 'year', 'years',
+  'first', 'time', 'today', 'week', 'month', 'world', 'his', 'her', 'its',
+  'recently', 'recent', 'happened', 'happen', 'tell', 'please', 'can',
+  'get', 'got', 'any', 'all', 'each', 'not', 'but', 'out', 'now', 'here',
+  'again', 'once', 'along', 'across', 'behind', 'beyond', 'plus', 'except',
+  'without', 'within', 'toward', 'towards', 'until', 'upon', 'per', 'via'
+]);
+
+export const LIL_SEARCH_MAX_KEYWORDS = 5;
+
+/**
+ * Reduce a question to its content keywords, in order, deduplicated and
+ * capped. "What new space discoveries happened recently from the James
+ * Webb telescope?" → ["space", "discoveries", "james", "webb", "telescope"].
+ * Returns [] when nothing topical survives (the caller then skips balloons).
+ */
+export function extractSearchKeywords(query, { maxKeywords = LIL_SEARCH_MAX_KEYWORDS } = {}) {
+  const words = String(query || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !SEARCH_STOP_WORDS.has(w));
+  return [...new Set(words)].slice(0, maxKeywords);
+}
+
+// Plural sibling for a keyword: "discoveries" → "discovery",
+// "telescope" → "telescopes". Words already ending in "s" stay as-is —
+// deriving a singular ("james" → "jame") only adds junk matches.
+function keywordVariants(word) {
+  if (word.endsWith('ies') && word.length > 4) return [word, `${word.slice(0, -3)}y`];
+  if (!word.endsWith('s')) return [word, `${word}s`];
+  return [word];
 }
 
 function wikipediaUrl(query, limit) {
@@ -211,6 +269,69 @@ function balloonToSource(row) {
 }
 
 /**
+ * Approved balloons for a question. Approved-only (Katie-curated) and
+ * keyword-matched: the question's content keywords are OR-matched against
+ * title/description/ai_summary, newest first. Rows carrying an excluded
+ * interest keyword (the site's own classification: stocks, crypto,
+ * business-news, clickbait, death, politics, elections, government) are
+ * dropped here and counted in `flaggedFiltered`; the stem filter in the
+ * orchestrator is only the backstop for untagged rows. Returns
+ * `{ sources, flaggedFiltered, error }`. Never throws.
+ */
+export async function searchApprovedBalloons(env, query, {
+  limit = LIL_SEARCH_BALLOON_LIMIT,
+  fetchLimit = 20
+} = {}) {
+  const keywords = extractSearchKeywords(query);
+  if (keywords.length === 0) return { sources: [], flaggedFiltered: 0, error: null };
+  const terms = [...new Set(keywords.flatMap(keywordVariants))];
+  const clauses = [];
+  for (const term of terms) {
+    clauses.push(
+      `title.ilike.*${term}*`,
+      `description.ilike.*${term}*`,
+      `ai_summary.ilike.*${term}*`
+    );
+  }
+  try {
+    const params = new URLSearchParams({
+      select: 'title,article_url,description,ai_summary,source_name,interest_keywords,approved,published_at',
+      approved: 'eq.true',
+      removed: 'eq.false',
+      or: `(${clauses.join(',')})`,
+      order: 'published_at.desc.nullslast,fetched_at.desc',
+      limit: String(fetchLimit)
+    });
+    const response = await fetch(supabaseUrl(env, STORIES_TABLE, params), {
+      headers: supabaseHeaders(env)
+    });
+    if (!response.ok) return { sources: [], flaggedFiltered: 0, error: `http-${response.status}` };
+    const rows = await response.json().catch(() => null);
+    if (!Array.isArray(rows)) return { sources: [], flaggedFiltered: 0, error: 'bad-response' };
+    const sources = [];
+    let flaggedFiltered = 0;
+    for (const row of rows) {
+      if (sources.length >= limit) break;
+      // The query already filters approved, but enforce it client-side too:
+      // a row that is not approved is never a Lil source, whatever the
+      // query returned.
+      if (row?.approved !== true) continue;
+      const tagged = Array.isArray(row.interest_keywords) ? row.interest_keywords : [];
+      if (tagged.some((k) => EXCLUDED_KEYWORD_IDS.has(k))) {
+        flaggedFiltered += 1;
+        continue;
+      }
+      const source = balloonToSource(row);
+      if (!source) continue;
+      sources.push(source);
+    }
+    return { sources, flaggedFiltered, error: null };
+  } catch {
+    return { sources: [], flaggedFiltered: 0, error: 'fetch-failed' };
+  }
+}
+
+/**
  * Run the layers in priority order and merge them into one source list.
  *
  * Returns:
@@ -255,14 +376,18 @@ export async function searchLilWebSources(env, query, {
     }
   };
 
-  // 1. Balloons first — free, already kid-curated.
+  // 1. Balloons first — approved, Katie-curated, keyword-matched.
   try {
-    const rows = await searchNewsStories(env, query, balloonLimit);
-    const balloonSources = (Array.isArray(rows) ? rows : []).map(balloonToSource);
-    const before = merged.length;
-    take(balloonSources);
-    counts.balloons = merged.length - before;
-    if (counts.balloons > 0) layersUsed.push('balloons');
+    const balloons = await searchApprovedBalloons(env, query, { limit: balloonLimit });
+    if (balloons.error) {
+      layerErrors.balloons = balloons.error;
+    } else {
+      counts.flaggedFiltered += balloons.flaggedFiltered;
+      const before = merged.length;
+      take(balloons.sources);
+      counts.balloons = merged.length - before;
+      if (counts.balloons > 0) layersUsed.push('balloons');
+    }
   } catch {
     layerErrors.balloons = 'fetch-failed';
   }

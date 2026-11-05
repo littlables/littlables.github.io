@@ -4,9 +4,11 @@ import assert from 'node:assert/strict';
 import {
   searchWikipedia,
   searchSerper,
+  searchApprovedBalloons,
   searchLilWebSources,
   logLilSearch,
   isFlaggedText,
+  extractSearchKeywords,
   trimText,
   domainOf,
   LIL_WIKIPEDIA_USER_AGENT
@@ -34,6 +36,7 @@ function balloonRow(overrides = {}) {
     approved: true,
     removed: false,
     fetched_at: '2026-11-04T10:00:00Z',
+    interest_keywords: [],
     ...overrides
   };
 }
@@ -288,11 +291,162 @@ test('searchLilWebSources fails open when every layer fails', async () => {
     assert.deepEqual(result.sources, []);
     assert.deepEqual(result.grounding, []);
     assert.deepEqual(result.counts, { balloons: 0, wikipedia: 0, serper: 0, flaggedFiltered: 0 });
-    // searchNewsStories fails open silently (a balloons failure is
-    // indistinguishable from no matches), so only the layers that report
-    // their own errors show up here.
-    assert.deepEqual(result.layerErrors, { wikipedia: 'fetch-failed' });
+    // Unlike the old searchNewsStories path (which swallowed its own
+    // failures), searchApprovedBalloons reports its error, so both failed
+    // layers show up here.
+    assert.deepEqual(result.layerErrors, { balloons: 'fetch-failed', wikipedia: 'fetch-failed' });
     assert.equal(result.serperSkipped, 'no-key');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('extractSearchKeywords keeps content words and drops the question', () => {
+  assert.deepEqual(
+    extractSearchKeywords('What new space discoveries happened recently from the James Webb telescope?'),
+    ['space', 'discoveries', 'james', 'webb', 'telescope']
+  );
+  assert.deepEqual(extractSearchKeywords('pandas'), ['pandas']);
+  assert.deepEqual(extractSearchKeywords('What is the moon?'), ['moon']);
+  assert.deepEqual(extractSearchKeywords('How far away is K2-18b?'), ['far', 'away', 'k2-18b']);
+  assert.deepEqual(extractSearchKeywords('What is it?'), []);
+  assert.deepEqual(extractSearchKeywords(''), []);
+  assert.deepEqual(extractSearchKeywords(null), []);
+  // Deduplicated and capped at 5, in order.
+  assert.deepEqual(
+    extractSearchKeywords('Tell me about pandas pandas and bamboo and bears and forests and eating'),
+    ['pandas', 'bamboo', 'bears', 'forests', 'eating']
+  );
+});
+
+test('isFlaggedText catches the death words the JWST live test exposed', () => {
+  for (const flagged of [
+    'Mother and daughter killed in grizzly bear attack',
+    'Miami helicopter crash leaves one person dead and two injured',
+    'Beloved actor dies at 92',
+    'Man died after a fall',
+    'Deadly disease spreads in the region',
+    'Scientist stabbed in the park',
+    'Teen dies by suicide'
+  ]) {
+    assert.equal(isFlaggedText(flagged), true, flagged);
+  }
+  for (const clean of [
+    'Shooting stars light up the night sky',
+    'Flu shots keep kids healthy',
+    'The project deadline is Friday',
+    'Studies show pandas love bamboo',
+    'How do caterpillars turn into butterflies?'
+  ]) {
+    assert.equal(isFlaggedText(clean), false, clean);
+  }
+});
+
+test('searchApprovedBalloons is approved-only and drops excluded-interest rows', async () => {
+  const originalFetch = globalThis.fetch;
+  let seenUrl;
+  globalThis.fetch = async (input) => {
+    seenUrl = String(input);
+    return Response.json([
+      balloonRow({ id: 's1', title: 'James Webb telescope finds water vapor', article_url: 'https://example.com/webb' }),
+      balloonRow({ id: 's2', title: 'Zelensky doubts Musk acted alone', article_url: 'https://example.com/zelensky', interest_keywords: ['politics'] }),
+      balloonRow({ id: 's3', title: 'Bear attack kills hikers', article_url: 'https://example.com/bears', interest_keywords: ['death'] }),
+      balloonRow({ id: 's4', title: 'Webb spots a distant galaxy', article_url: 'https://example.com/galaxy', approved: false }),
+      balloonRow({ id: 's5', title: 'Stock market crash wipes out gains', article_url: 'https://example.com/stocks' })
+    ]);
+  };
+  try {
+    const { sources, flaggedFiltered, error } = await searchApprovedBalloons(ENV, 'James Webb telescope');
+    assert.equal(error, null);
+    assert.equal(sources.length, 2);
+    assert.equal(sources[0].title, 'James Webb telescope finds water vapor');
+    // Politics + death dropped by classification here (flaggedFiltered 2).
+    // The stocks row survives this level — the stem filter in the
+    // orchestrator drops it, and the JWST regression test below proves it.
+    assert.equal(sources[1].title, 'Stock market crash wipes out gains');
+    assert.equal(flaggedFiltered, 2);
+    assert.match(seenUrl, /approved=eq\.true/);
+    assert.match(seenUrl, /removed=eq\.false/);
+    assert.match(seenUrl, /title\.ilike\.\*james\*/);
+    assert.match(seenUrl, /title\.ilike\.\*webb\*/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('searchApprovedBalloons skips the fetch when no keywords survive', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return Response.json([]); };
+  try {
+    assert.deepEqual(
+      await searchApprovedBalloons(ENV, 'What is it?'),
+      { sources: [], flaggedFiltered: 0, error: null }
+    );
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('searchApprovedBalloons fails open on HTTP errors, bad bodies, and thrown fetches', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response('nope', { status: 500 });
+    assert.deepEqual(
+      await searchApprovedBalloons(ENV, 'pandas'),
+      { sources: [], flaggedFiltered: 0, error: 'http-500' }
+    );
+    globalThis.fetch = async () => Response.json({ notRows: true });
+    assert.deepEqual(
+      await searchApprovedBalloons(ENV, 'pandas'),
+      { sources: [], flaggedFiltered: 0, error: 'bad-response' }
+    );
+    globalThis.fetch = async () => { throw new Error('network down'); };
+    assert.deepEqual(
+      await searchApprovedBalloons(ENV, 'pandas'),
+      { sources: [], flaggedFiltered: 0, error: 'fetch-failed' }
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('searchLilWebSources JWST regression: approved space balloons only, no death or politics', async () => {
+  const originalFetch = globalThis.fetch;
+  const calledHosts = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    calledHosts.push(url.hostname);
+    if (url.pathname === '/rest/v1/news_stories') {
+      return Response.json([
+        balloonRow({ id: 's1', title: 'James Webb telescope finds water vapor on a distant planet', article_url: 'https://example.com/webb-water', interest_keywords: ['space'] }),
+        balloonRow({ id: 's2', title: 'New images from the James Webb telescope', article_url: 'https://example.com/webb-images', interest_keywords: [] }),
+        balloonRow({ id: 's3', title: 'Webb spots the oldest galaxy yet', article_url: 'https://example.com/galaxy', approved: false }),
+        balloonRow({ id: 's4', title: 'Zelensky doubts Musk acted alone in Ukraine', article_url: 'https://example.com/zelensky', interest_keywords: ['politics'] }),
+        balloonRow({ id: 's5', title: 'Mother and daughter killed in grizzly bear attack', article_url: 'https://example.com/bears', interest_keywords: ['death'] })
+      ]);
+    }
+    if (url.hostname === 'en.wikipedia.org') {
+      return Response.json({
+        query: {
+          pages: [{ title: 'James Webb Space Telescope', extract: 'The James Webb Space Telescope is a space telescope.', canonicalurl: 'https://en.wikipedia.org/wiki/James_Webb_Space_Telescope' }]
+        }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+  try {
+    const result = await searchLilWebSources(ENV, 'What new space discoveries happened recently from the James Webb telescope?');
+    assert.equal(result.sources.length, 3);
+    assert.equal(result.sources[0].title, 'James Webb telescope finds water vapor on a distant planet');
+    assert.equal(result.sources[1].title, 'New images from the James Webb telescope');
+    assert.equal(result.sources[2].title, 'James Webb Space Telescope');
+    assert.deepEqual(result.layersUsed, ['balloons', 'wikipedia']);
+    assert.deepEqual(result.searchQueries, ['Wikipedia: What new space discoveries happened recently from the James Webb telescope?']);
+    assert.deepEqual(result.counts, { balloons: 2, wikipedia: 1, serper: 0, flaggedFiltered: 2 });
+    assert.equal(result.sources.some((s) => /Zelensky|killed|bear attack/i.test(s.title)), false);
+    assert.deepEqual(calledHosts, ['supabase.example', 'en.wikipedia.org']);
   } finally {
     globalThis.fetch = originalFetch;
   }

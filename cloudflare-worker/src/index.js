@@ -3982,7 +3982,7 @@ export default {
           if (webSources.grounding.length > 0) {
             systemPrompt = systemPrompt.replace(
               'You do not have live web access, so be clear when a question depends on recent news or changing facts; never invent current events or sources.',
-              'Answer only from the sources below. Cite them by title when you use them. If the sources do not answer the question, say so plainly instead of guessing. Never invent a URL or a source.'
+              'Answer only from the sources below. Cite them by title when you use them. If none of the sources below answers the question, say "I couldn\'t find a good source for that yet." and stop there — do not answer from memory. Never invent a URL or a source.'
             );
             systemPrompt += `\n\nSources:\n${webSources.grounding.map((g, i) => `${i + 1}. ${g.title} (${g.url}): ${g.text}`).join('\n')}`;
           }
