@@ -7038,7 +7038,7 @@ html[data-system-font="true"] .story-provider-badge {
 .lil-floating-avatar {
   position: fixed;
   z-index: 1200;
-  right: max(3.75rem, env(safe-area-inset-right));
+  right: max(1.25rem, env(safe-area-inset-right));
   bottom: max(3.75rem, env(safe-area-inset-bottom));
   display: block;
   width: 68px;
@@ -7080,7 +7080,7 @@ html[data-system-font="true"] .story-provider-badge {
 
 @media (max-width: 600px) {
   .lil-floating-avatar {
-    right: max(3.4rem, env(safe-area-inset-right));
+    right: max(0.9rem, env(safe-area-inset-right));
     bottom: max(3.4rem, env(safe-area-inset-bottom));
     width: 58px;
     height: 58px;
