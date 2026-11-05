@@ -21,6 +21,7 @@ TEST_FILES=(
   "cloudflare-worker/src/lil-global-distill.test.mjs"
   "cloudflare-worker/src/lil-bridge-auth.test.mjs"
   "cloudflare-worker/src/lil-muse-queue.test.mjs"
+  "cloudflare-worker/src/lil-server-chat-logs.test.mjs"
   "cloudflare-worker/src/provider-sync-runs.test.mjs"
   "cloudflare-worker/src/taste-reader.test.mjs"
 )
