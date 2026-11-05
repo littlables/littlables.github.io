@@ -207,7 +207,7 @@ test('searchSerper fails open on HTTP errors and bad bodies', async () => {
   }
 });
 
-test('searchLilWebSources puts balloons first and only calls Serper when thin', async () => {
+test('searchLilWebSources keeps balloons out of grounding; Wikipedia and Serper ground the answer', async () => {
   const originalFetch = globalThis.fetch;
   const calledHosts = [];
   globalThis.fetch = async (input, options = {}) => {
@@ -238,25 +238,29 @@ test('searchLilWebSources puts balloons first and only calls Serper when thin', 
   };
   try {
     const result = await searchLilWebSources(ENV, 'pandas');
-    assert.equal(result.sources.length, 4);
-    assert.equal(result.sources[0].title, 'Giant pandas eat bamboo all day');
-    assert.equal(result.sources[1].title, 'Panda');
-    assert.equal(result.sources[2].title, 'Panda facts');
-    assert.deepEqual(result.layersUsed, ['balloons', 'wikipedia', 'serper']);
+    // Grounding is Wikipedia + Serper only — the balloon is separate.
+    assert.equal(result.sources.length, 3);
+    assert.equal(result.sources[0].title, 'Panda');
+    assert.equal(result.sources[1].title, 'Panda facts');
+    assert.equal(result.sources[2].title, 'More pandas');
+    assert.deepEqual(result.balloons.map((b) => b.title), ['Giant pandas eat bamboo all day']);
+    assert.deepEqual(result.layersUsed, ['wikipedia', 'serper']);
     assert.deepEqual(result.searchQueries, ['Wikipedia: pandas', 'Serper: pandas']);
     assert.deepEqual(result.counts, { balloons: 1, wikipedia: 1, serper: 2, flaggedFiltered: 1 });
     assert.deepEqual(result.layerErrors, {});
     assert.equal(result.serperSkipped, null);
     assert.equal(typeof result.latencyMs, 'number');
-    assert.equal(result.grounding.length, 4);
-    assert.match(result.grounding[0].text, /bamboo/);
+    // The balloon's text never reaches the model prompt.
+    assert.equal(result.grounding.length, 3);
+    assert.match(result.grounding[0].text, /bears/);
+    assert.equal(result.grounding.some((g) => /bamboo all day/i.test(g.text)), false);
     assert.deepEqual(calledHosts, ['supabase.example', 'en.wikipedia.org', 'google.serper.dev']);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('searchLilWebSources skips Wikipedia and Serper when balloons already answer', async () => {
+test('searchLilWebSources still runs Wikipedia and Serper when balloons are plentiful', async () => {
   const originalFetch = globalThis.fetch;
   const calledHosts = [];
   globalThis.fetch = async (input) => {
@@ -270,14 +274,30 @@ test('searchLilWebSources skips Wikipedia and Serper when balloons already answe
         balloonRow({ id: 's4', title: 'Panda four', article_url: 'https://example.com/4' })
       ]);
     }
+    if (url.hostname === 'en.wikipedia.org') {
+      return Response.json({
+        query: {
+          pages: [{ title: 'Panda', extract: 'Pandas are bears.', canonicalurl: 'https://en.wikipedia.org/wiki/Panda' }]
+        }
+      });
+    }
+    if (url.hostname === 'google.serper.dev') {
+      return Response.json({
+        organic: [{ title: 'Panda facts', link: 'https://kids.example.com/pandas', snippet: 'Fun panda facts.', position: 1 }]
+      });
+    }
     throw new Error(`Unexpected fetch: ${url.href}`);
   };
   try {
     const result = await searchLilWebSources(ENV, 'pandas');
-    assert.equal(result.sources.length, 4);
-    assert.deepEqual(result.layersUsed, ['balloons']);
-    assert.deepEqual(result.searchQueries, []);
-    assert.deepEqual(calledHosts, ['supabase.example']);
+    // Four balloons ride along, but the web layers run anyway — balloons
+    // no longer count toward the "thin" threshold.
+    assert.equal(result.balloons.length, 4);
+    assert.equal(result.sources.length, 2);
+    assert.equal(result.sources[0].title, 'Panda');
+    assert.deepEqual(result.layersUsed, ['wikipedia', 'serper']);
+    assert.deepEqual(result.searchQueries, ['Wikipedia: pandas', 'Serper: pandas']);
+    assert.deepEqual(calledHosts, ['supabase.example', 'en.wikipedia.org', 'google.serper.dev']);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -289,6 +309,7 @@ test('searchLilWebSources fails open when every layer fails', async () => {
   try {
     const result = await searchLilWebSources({ SUPABASE_URL: ENV.SUPABASE_URL }, 'pandas');
     assert.deepEqual(result.sources, []);
+    assert.deepEqual(result.balloons, []);
     assert.deepEqual(result.grounding, []);
     assert.deepEqual(result.counts, { balloons: 0, wikipedia: 0, serper: 0, flaggedFiltered: 0 });
     // Unlike the old searchNewsStories path (which swallowed its own
@@ -412,7 +433,7 @@ test('searchApprovedBalloons fails open on HTTP errors, bad bodies, and thrown f
   }
 });
 
-test('searchLilWebSources JWST regression: approved space balloons only, no death or politics', async () => {
+test('searchLilWebSources JWST regression: Wikipedia grounds, space balloons ride along, no death or politics', async () => {
   const originalFetch = globalThis.fetch;
   const calledHosts = [];
   globalThis.fetch = async (input) => {
@@ -434,19 +455,60 @@ test('searchLilWebSources JWST regression: approved space balloons only, no deat
         }
       });
     }
+    if (url.hostname === 'google.serper.dev') {
+      return Response.json({ organic: [] });
+    }
     throw new Error(`Unexpected fetch: ${url.href}`);
   };
   try {
     const result = await searchLilWebSources(ENV, 'What new space discoveries happened recently from the James Webb telescope?');
-    assert.equal(result.sources.length, 3);
-    assert.equal(result.sources[0].title, 'James Webb telescope finds water vapor on a distant planet');
-    assert.equal(result.sources[1].title, 'New images from the James Webb telescope');
-    assert.equal(result.sources[2].title, 'James Webb Space Telescope');
-    assert.deepEqual(result.layersUsed, ['balloons', 'wikipedia']);
-    assert.deepEqual(result.searchQueries, ['Wikipedia: What new space discoveries happened recently from the James Webb telescope?']);
+    // Grounding is the Wikipedia article only — the two approved space
+    // balloons are shown separately, never in the answer's sources.
+    assert.equal(result.sources.length, 1);
+    assert.equal(result.sources[0].title, 'James Webb Space Telescope');
+    assert.deepEqual(result.balloons.map((b) => b.title), [
+      'James Webb telescope finds water vapor on a distant planet',
+      'New images from the James Webb telescope'
+    ]);
+    assert.deepEqual(result.layersUsed, ['wikipedia']);
+    assert.deepEqual(result.searchQueries, [
+      'Wikipedia: What new space discoveries happened recently from the James Webb telescope?',
+      'Serper: What new space discoveries happened recently from the James Webb telescope?'
+    ]);
     assert.deepEqual(result.counts, { balloons: 2, wikipedia: 1, serper: 0, flaggedFiltered: 2 });
     assert.equal(result.sources.some((s) => /Zelensky|killed|bear attack/i.test(s.title)), false);
-    assert.deepEqual(calledHosts, ['supabase.example', 'en.wikipedia.org']);
+    assert.equal(result.balloons.some((s) => /Zelensky|killed|bear attack/i.test(s.title)), false);
+    assert.deepEqual(calledHosts, ['supabase.example', 'en.wikipedia.org', 'google.serper.dev']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('searchLilWebSources balloons never ground the answer when the web layers find nothing', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/rest/v1/news_stories') {
+      return Response.json([balloonRow()]);
+    }
+    if (url.hostname === 'en.wikipedia.org') {
+      return Response.json({ query: { pages: [] } });
+    }
+    throw new Error(`Unexpected fetch: ${url.href}`);
+  };
+  try {
+    // No Serper key: the layer is skipped, so the web layers contribute
+    // nothing — the balloon is still shown, but the answer has no sources
+    // to ground in, and the handler's refusal line applies.
+    const result = await searchLilWebSources({ SUPABASE_URL: ENV.SUPABASE_URL, SUPABASE_SECRET_KEY: 'service-secret' }, 'pandas');
+    assert.deepEqual(result.sources, []);
+    assert.deepEqual(result.grounding, []);
+    assert.deepEqual(result.balloons.map((b) => b.title), ['Giant pandas eat bamboo all day']);
+    assert.deepEqual(result.layersUsed, []);
+    assert.deepEqual(result.searchQueries, ['Wikipedia: pandas']);
+    assert.deepEqual(result.counts, { balloons: 1, wikipedia: 0, serper: 0, flaggedFiltered: 0 });
+    assert.deepEqual(result.layerErrors, {});
+    assert.equal(result.serperSkipped, 'no-key');
   } finally {
     globalThis.fetch = originalFetch;
   }

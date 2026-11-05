@@ -6889,6 +6889,41 @@ html[data-system-font="true"] .story-provider-badge {
   overflow: hidden;
 }
 
+/* Balloons from littlables — collapsible, kept away from the answer's sources */
+.lil-balloons-section {
+  border-top: 1px solid var(--news-divider, rgba(192, 132, 252, 0.12));
+  padding-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.lil-balloons-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.35rem 0.25rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--news-text-muted, #c084fc);
+}
+
+.lil-balloons-toggle:hover {
+  color: var(--news-text, #fbf7ff);
+}
+
+.lil-balloons-toggle-arrow {
+  font-size: 0.85rem;
+  width: 1rem;
+  text-align: center;
+}
+
 /* Footer Actions */
 .lil-result-footer {
   border-top: 1px solid var(--news-divider, rgba(192, 132, 252, 0.12));

@@ -20,6 +20,7 @@ export interface LilSearchResult {
   answer: string;
   searchQueries: string[];
   sources: LilSource[];
+  balloons: LilSource[];
   apiKeyNotice?: string;
   provider?: string;
   model?: string;
@@ -297,6 +298,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
     return [];
   });
   const [copied, setCopied] = useState(false);
+  const [balloonsOpen, setBalloonsOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<LilChatMessage[]>([]);
   const [chatSessions, setChatSessions] = useState<LilChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -1001,6 +1003,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
         answer,
         searchQueries: Array.isArray(data.searchQueries) ? data.searchQueries : [],
         sources: Array.isArray(data.sources) ? data.sources : [],
+        balloons: Array.isArray(data.balloons) ? data.balloons : [],
         apiKeyNotice: data.apiKeyNotice || undefined,
         provider: data.provider || 'local-ollama',
         model: data.model || 'llama3.2:3b',
@@ -1008,6 +1011,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
       };
 
       setCurrentResult(result);
+      setBalloonsOpen(false);
       setSearchHistory((prev) => [result, ...prev.filter((item) => item.query.toLowerCase() !== trimmed.toLowerCase())].slice(0, 10));
 
       window.requestAnimationFrame(() => {
@@ -1038,6 +1042,7 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
 
   const handleSelectHistory = (item: LilSearchResult) => {
     setCurrentResult(item);
+    setBalloonsOpen(false);
     setQuery(item.query);
     setError(null);
     window.requestAnimationFrame(() => {
@@ -1811,6 +1816,45 @@ export const LilPage: React.FC<LilPageProps> = ({ onHome }) => {
               ✨ Ask Another Question
             </button>
           </footer>
+
+          {/* Balloons from littlables — back burner: related site stories,
+              shown in their own collapsible section away from the answer's
+              sources. They never ground the answer. */}
+          {currentResult.balloons && currentResult.balloons.length > 0 && (
+            <aside className="lil-balloons-section">
+              <button
+                type="button"
+                className="lil-balloons-toggle"
+                onClick={() => setBalloonsOpen((open) => !open)}
+                aria-expanded={balloonsOpen}
+                title={balloonsOpen ? 'Hide balloons from littlables' : 'Show balloons from littlables'}
+              >
+                <span className="lil-balloons-toggle-arrow" aria-hidden="true">{balloonsOpen ? '▾' : '▸'}</span>
+                <span>🎈 Balloons from littlables ({currentResult.balloons.length})</span>
+              </button>
+              {balloonsOpen && (
+                <div className="lil-sources-grid">
+                  {currentResult.balloons.map((source, idx) => (
+                    <a
+                      key={idx}
+                      href={source.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="lil-source-card"
+                      title={`Open balloon: ${source.title}`}
+                    >
+                      <div className="lil-source-top">
+                        <span className="lil-source-domain-icon">🌐</span>
+                        <span className="lil-source-domain">{source.domain || 'littlables'}</span>
+                        <span className="lil-source-external-icon">↗</span>
+                      </div>
+                      <div className="lil-source-title">{source.title}</div>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </aside>
+          )}
         </section>
       )}
 

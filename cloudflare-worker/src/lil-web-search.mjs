@@ -5,21 +5,24 @@
  * model-only. Layers run in priority order and every layer fails open, so a
  * provider outage degrades to fewer sources, never to a lost answer:
  *
- *   1. littlables balloons — the site's own APPROVED stories in Supabase
- *      (free, Katie-curated; unapproved raw ingest never reaches a child).
- *      The question is reduced to content keywords first — a raw question
- *      fed to the generic keyword feed matches stopwords like `what`/`new`
- *      and returns the newest stories on any topic, which is exactly the
- *      bug the 2026-11-05 JWST live test caught.
- *   2. Wikipedia — live lookup via the Action API. Wikipedia text is
+ *   1. Wikipedia — live lookup via the Action API. Wikipedia text is
  *      CC BY-SA, so extracts may be kept and re-served with attribution
  *      (the source link is the attribution); a descriptive User-Agent is
  *      mandatory. No key needed.
- *   3. Serper — live Google results, only when balloons + Wikipedia are
- *      thin (< 3 sources). Needs `SERPER_API_KEY` as a Worker secret; when
+ *   2. Serper — live Google results, only when Wikipedia is thin
+ *      (< 3 sources). Needs `SERPER_API_KEY` as a Worker secret; when
  *      it is absent the layer is skipped, never an error. Serper results
  *      are live-only in this experiment: no Serper title/snippet is stored
  *      anywhere (see `logLilSearch`).
+ *
+ * Balloons ride along separately (2026-11-05, Katie: back burner — not
+ * enough tagged content yet to ground answers): the site's own APPROVED
+ * stories in Supabase (free, Katie-curated; unapproved raw ingest never
+ * reaches a child) are returned in their own `balloons` list, up to 5,
+ * shown in a collapsible section away from the answer's sources. They
+ * are NEVER in the grounding prompt, so a loosely-matched balloon can no
+ * longer steer the answer — that is exactly what the 2026-11-05 JWST
+ * live retest caught ("Safe Space" matched the keyword `space`).
  *
  * Kid-safety: results are filtered against the flagged-topic stems
  * (stocks, crypto, business, death, politics, elections, government,
@@ -332,14 +335,23 @@ export async function searchApprovedBalloons(env, query, {
 }
 
 /**
- * Run the layers in priority order and merge them into one source list.
+ * Run the grounding layers (Wikipedia, then Serper when thin) and gather
+ * balloons separately.
  *
  * Returns:
- * - `sources`: public sources, `{ title, url, domain }`, balloons first,
- *   capped at `LIL_SEARCH_MAX_SOURCES`.
- * - `grounding`: the same sources plus their short text, for the model
- *   prompt only — never returned to the client and never logged.
- * - `layersUsed`: layers that contributed at least one source.
+ * - `sources`: public grounding sources, `{ title, url, domain }`,
+ *   Wikipedia + Serper only, capped at `LIL_SEARCH_MAX_SOURCES`. These
+ *   are the sources the answer is grounded in — and the only ones shown
+ *   in the Sources section.
+ * - `balloons`: the site's own approved stories, `{ title, url, domain }`,
+ *   up to `LIL_SEARCH_BALLOON_LIMIT`, keyword-matched and
+ *   classification-screened like before — but NEVER in `grounding`, so
+ *   they cannot steer the answer. The frontend shows them in their own
+ *   collapsible section, away from the answer's sources.
+ * - `grounding`: the grounding sources plus their short text, for the
+ *   model prompt only — never returned to the client and never logged.
+ * - `layersUsed`: grounding layers that contributed at least one source
+ *   (balloons are not a grounding layer, so they are never listed).
  * - `searchQueries`: the web searches actually executed, as
  *   `"Wikipedia: <query>"` / `"Serper: <query>"` pills (balloons are the
  *   site's own content, not a web search, so they are not listed).
@@ -358,42 +370,46 @@ export async function searchLilWebSources(env, query, {
 } = {}) {
   const startedAt = Date.now();
   const merged = [];
+  const balloonList = [];
   const counts = { balloons: 0, wikipedia: 0, serper: 0, flaggedFiltered: 0 };
   const layerErrors = {};
   const layersUsed = [];
   const searchQueries = [];
   let serperSkipped = null;
 
-  const take = (candidates) => {
+  const takeInto = (list, candidates, cap) => {
+    let added = 0;
     for (const candidate of candidates) {
-      if (merged.length >= LIL_SEARCH_MAX_SOURCES) break;
+      if (list.length >= cap) break;
       if (!candidate) continue;
       if (isFlaggedText(`${candidate.title} ${candidate.snippet || ''}`)) {
         counts.flaggedFiltered += 1;
         continue;
       }
-      merged.push(candidate);
+      list.push(candidate);
+      added += 1;
     }
+    return added;
   };
 
-  // 1. Balloons first — approved, Katie-curated, keyword-matched.
+  // Balloons ride along separately — approved, Katie-curated,
+  // keyword-matched, classification-screened. They are gathered first so
+  // their fetch failure is reported, but they never enter `merged`, so
+  // they can neither ground the answer nor suppress the web layers.
   try {
     const balloons = await searchApprovedBalloons(env, query, { limit: balloonLimit });
     if (balloons.error) {
       layerErrors.balloons = balloons.error;
     } else {
       counts.flaggedFiltered += balloons.flaggedFiltered;
-      const before = merged.length;
-      take(balloons.sources);
-      counts.balloons = merged.length - before;
-      if (counts.balloons > 0) layersUsed.push('balloons');
+      counts.balloons = takeInto(balloonList, balloons.sources, balloonLimit);
     }
   } catch {
     layerErrors.balloons = 'fetch-failed';
   }
 
-  // 2. Wikipedia fills when balloons are thin.
-  if (merged.length < 3) {
+  // 1. Wikipedia grounds the answer.
+  {
     const wiki = await searchWikipedia(env, query, { limit: wikipediaLimit });
     if (wiki.error) {
       layerErrors.wikipedia = wiki.error;
@@ -402,14 +418,12 @@ export async function searchLilWebSources(env, query, {
       // is not listed, so the frontend never shows a search that did not
       // actually execute.
       searchQueries.push(`Wikipedia: ${query}`);
-      const before = merged.length;
-      take(wiki.results.map((r) => ({ ...r, layer: 'wikipedia' })));
-      counts.wikipedia = merged.length - before;
+      counts.wikipedia = takeInto(merged, wiki.results.map((r) => ({ ...r, layer: 'wikipedia' })), LIL_SEARCH_MAX_SOURCES);
       if (counts.wikipedia > 0) layersUsed.push('wikipedia');
     }
   }
 
-  // 3. Serper is the live fallback, only when still thin.
+  // 2. Serper is the live fallback, only when the grounding is still thin.
   if (merged.length < 3) {
     const serper = await searchSerper(env, query, { limit: serperLimit });
     if (serper.skipped) {
@@ -418,15 +432,14 @@ export async function searchLilWebSources(env, query, {
       layerErrors.serper = serper.error;
     } else {
       searchQueries.push(`Serper: ${query}`);
-      const before = merged.length;
-      take(serper.results.map((r) => ({ ...r, layer: 'serper' })));
-      counts.serper = merged.length - before;
+      counts.serper = takeInto(merged, serper.results.map((r) => ({ ...r, layer: 'serper' })), LIL_SEARCH_MAX_SOURCES);
       if (counts.serper > 0) layersUsed.push('serper');
     }
   }
 
   return {
     sources: merged.map(({ title, url, domain }) => ({ title, url, domain })),
+    balloons: balloonList.map(({ title, url, domain }) => ({ title, url, domain })),
     grounding: merged.map(({ title, url, snippet }) => ({ title, url, text: snippet })),
     layersUsed,
     searchQueries,

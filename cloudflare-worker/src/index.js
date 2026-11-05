@@ -3971,7 +3971,8 @@ export default {
         const recallQuery = isChatRequest ? messages[messages.length - 1].content : query;
         const memoryBlock = await getLilMemoryBlock(env, auth.userId, recallQuery);
         if (memoryBlock) systemPrompt += `\n\n${memoryBlock}`;
-        // Web-search layers (base experiment: balloons → Wikipedia → Serper).
+        // Web-search layers (Wikipedia → Serper ground the answer;
+        // balloons ride along in their own section and never ground it).
         // Search mode only: chat, code, and games stay model-only. Every
         // layer fails open, so a provider outage degrades to fewer sources,
         // never to a lost answer. The grounding text goes into the prompt
@@ -3996,8 +3997,10 @@ export default {
               query,
               layersUsed: webSources.layersUsed,
               counts: webSources.counts,
-              resultUrls: webSources.sources.map((s) => s.url),
-              domains: [...new Set(webSources.sources.map((s) => s.domain).filter(Boolean))],
+              // Audit everything the user was shown: grounding sources
+              // first, then the balloons from their own section.
+              resultUrls: [...webSources.sources, ...(webSources.balloons || [])].map((s) => s.url),
+              domains: [...new Set([...webSources.sources, ...(webSources.balloons || [])].map((s) => s.domain).filter(Boolean))],
               latencyMs: webSources.latencyMs,
               status,
               errorType
@@ -4064,7 +4067,7 @@ export default {
         if (isChatRequest) {
           return jsonResponse({ reply: answer, answer, provider: 'workers-ai', model: LIL_WORKERS_AI_MODEL });
         }
-        const sourceLabels = { balloons: 'littlables balloons', wikipedia: 'Wikipedia', serper: 'live web results' };
+        const sourceLabels = { wikipedia: 'Wikipedia', serper: 'live web results' };
         const checkedLayers = (webSources?.layersUsed || []).map((l) => sourceLabels[l] || l);
         const checkedList = checkedLayers.length <= 1
           ? checkedLayers.join('')
@@ -4073,6 +4076,7 @@ export default {
           answer,
           searchQueries: webSources?.searchQueries || [],
           sources: webSources?.sources || [],
+          balloons: webSources?.balloons || [],
           provider: 'workers-ai',
           model: LIL_WORKERS_AI_MODEL,
           apiKeyNotice: checkedList
